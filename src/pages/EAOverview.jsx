@@ -49,7 +49,7 @@ function isExpiringSoon(dateStr) {
 
 const ASSET_GROUPS = {
   "XAUUSD": ["XAUUSD", "GOLD", "XAUUSD.S", "XAUUSDm", "XAUUSDc"],
-  "NAS100": ["NAS100", "NASDAQ", "US100", "NDX"],
+  "NAS100": ["NAS100", "NASDAQ", "US100", "NDX","USTEC"],
   "DAX":    ["GDAXI", "DAX", "GER40", "GER30"],
   "EURUSD": ["EURUSD", "EURUSDm"],
 };
@@ -99,10 +99,13 @@ const COLUMN_GROUPS = [
     { key: "_next_opt",             label: "Pross. Ottim.", numeric: false },
     { key: "_notes",                label: "Note",          numeric: false },
   ]},
+  { label: "AZIONI", columns: [
+  { key: "_actions", label: "", numeric: false },
+]},
 ];
 
 const ALL_COLUMNS = COLUMN_GROUPS.flatMap(g => g.columns);
-const GESTIONE_KEYS = ["_next_opt", "_notes"];
+const GESTIONE_KEYS = ["_next_opt", "_notes", "_actions"];
 
 function SortIcon({ column, sortKey, sortDir }) {
   if (sortKey !== column) return <ArrowUpDown size={11} style={{ opacity: 0.25 }} />;
@@ -234,6 +237,7 @@ export function EAOverview() {
         return <span style={{ fontFamily: "var(--font-data)", color: ea.expectancy >= 0 ? "var(--accent)" : "var(--danger)" }}>{fmtProfit(ea.expectancy)}</span>;
       case "max_consec_loss":
         return <Badge value={ea.max_consec_loss ?? "—"} type={clType(ea.max_consec_loss)} />;
+        
 
       // ─── Colonne gestione ────────────────────────────────────────────────
       case "_next_opt": {
@@ -334,6 +338,33 @@ export function EAOverview() {
           </div>
         );
       }
+      case "_actions": {
+  const config   = getConfig(ea.ea_name);
+  const isHidden = config.is_hidden || ea.is_hidden || false;
+  return (
+    <button
+      onClick={e => {
+        e.stopPropagation();
+        updateConfig(ea.ea_name, { is_hidden: !isHidden });
+        // Aggiorna anche sul backend
+        api.saveEAConfig(ea.ea_name, { is_hidden: !isHidden });
+      }}
+      title={isHidden ? "Mostra EA" : "Archivia EA"}
+      style={{
+        background: "none",
+        border: `1px solid ${isHidden ? "var(--accent)" : "var(--border)"}`,
+        borderRadius: "var(--radius-sm)",
+        color: isHidden ? "var(--accent)" : "var(--text-muted)",
+        cursor: "pointer",
+        padding: "3px 8px",
+        fontSize: 11,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {isHidden ? "👁 Mostra" : "Archivia"}
+    </button>
+      );
+    }
 
       default: return "—";
     }
