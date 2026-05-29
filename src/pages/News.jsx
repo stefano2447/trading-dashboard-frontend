@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { Spinner } from "../components/ui/Spinner";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "../api/client";
@@ -27,8 +27,7 @@ function formatWeekLabel(monday, sunday) {
 function fmtTime(dateStr) {
   if (!dateStr) return "—";
   try {
-    const d = new Date(dateStr);
-    return d.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+    return new Date(dateStr).toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
   } catch { return dateStr; }
 }
 
@@ -52,7 +51,7 @@ const CURRENCY_COLORS = {
   CAD: "#52b8e0", NZD: "#52e0a4", CNY: "#e05252",
 };
 
-// ─── Card singolo evento ──────────────────────────────────────────────────────
+// ─── Card evento ──────────────────────────────────────────────────────────────
 function NewsCard({ event, isNext }) {
   const currColor = CURRENCY_COLORS[event.currency] || "var(--text-muted)";
   const isPast    = new Date(event.date) < new Date();
@@ -61,30 +60,20 @@ function NewsCard({ event, isNext }) {
     <div
       style={{
         display: "flex", alignItems: "flex-start", gap: "1rem",
-        padding: "0.75rem 1rem",
-        borderBottom: "1px solid var(--border)",
-        opacity: isPast && !isNext ? 0.5 : 1,
-        transition: "background 0.1s",
+        padding: "0.75rem 1rem", borderBottom: "1px solid var(--border)",
+        opacity: isPast && !isNext ? 0.5 : 1, transition: "background 0.1s",
       }}
       onMouseEnter={e => e.currentTarget.style.background = "var(--bg-hover)"}
       onMouseLeave={e => e.currentTarget.style.background = "transparent"}
     >
-      {/* Ora */}
       <div style={{ minWidth: 50, textAlign: "right" }}>
         <span style={{ fontFamily: "var(--font-data)", fontSize: 12, color: "var(--text-secondary)" }}>
           {fmtTime(event.date)}
         </span>
       </div>
-
-      {/* Dot rosso */}
       <div style={{ display: "flex", alignItems: "center", paddingTop: 2 }}>
-        <div style={{
-          width: 8, height: 8, borderRadius: "50%",
-          background: "var(--danger)", boxShadow: "0 0 6px var(--danger)",
-        }} />
+        <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--danger)", boxShadow: "0 0 6px var(--danger)" }} />
       </div>
-
-      {/* Valuta */}
       <div style={{
         minWidth: 44, textAlign: "center",
         background: `${currColor}22`, border: `1px solid ${currColor}44`,
@@ -93,23 +82,15 @@ function NewsCard({ event, isNext }) {
       }}>
         {event.currency}
       </div>
-
-      {/* Titolo + dati */}
       <div style={{ flex: 1 }}>
         <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)", marginBottom: 2 }}>
           {event.title}
         </div>
         {(event.forecast || event.previous || event.actual) && (
           <div style={{ display: "flex", gap: "1rem", fontSize: 11, color: "var(--text-muted)" }}>
-            {event.forecast && (
-              <span>Prev: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>{event.forecast}</span></span>
-            )}
-            {event.previous && (
-              <span>Prec: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>{event.previous}</span></span>
-            )}
-            {event.actual && (
-              <span>Att: <span style={{ fontFamily: "var(--font-data)", color: "var(--accent)", fontWeight: 600 }}>{event.actual}</span></span>
-            )}
+            {event.forecast && <span>Prev: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>{event.forecast}</span></span>}
+            {event.previous && <span>Prec: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>{event.previous}</span></span>}
+            {event.actual   && <span>Att: <span style={{ fontFamily: "var(--font-data)", color: "var(--accent)", fontWeight: 600 }}>{event.actual}</span></span>}
           </div>
         )}
       </div>
@@ -128,21 +109,30 @@ export function News() {
 
   const { monday, sunday } = getWeekRange(weekOffset);
 
-  async function loadNews() {
+  // fetchNews riceve la settimana esplicitamente — niente problemi di closure
+  const fetchNews = useCallback(async (week) => {
     setLoading(true);
     setError(null);
-    try {
-      const data = await api.getNews(weekOffset === 0 ? "current" : "next");
-      setNews(data);
-      setLastUpdate(new Date());
-    } catch(e) {
-      setError("Impossibile caricare le news da Forex Factory. Riprova tra qualche secondo.");
-      setNews([]);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const data = await api.getNews(week);
+        setNews(data);
+        setLastUpdate(new Date());
+        setLoading(false);
+        return;
+      } catch (e) {
+        console.log(`[News] Tentativo ${attempt}/3 fallito:`, e.message);
+        if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
+      }
     }
+    setError("Impossibile caricare le news. Riprova tra qualche secondo.");
+    setNews([]);
     setLoading(false);
-  }
+  }, []);
 
-  useEffect(() => { loadNews(); }, [weekOffset]);
+  useEffect(() => {
+    fetchNews(weekOffset === 0 ? "current" : "next");
+  }, [weekOffset, fetchNews]);
 
   const currencies = useMemo(() => {
     const unique = [...new Set(news.map(e => e.currency))].sort();
@@ -185,12 +175,15 @@ export function News() {
             {lastUpdate && <span> · aggiornato alle {lastUpdate.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</span>}
           </p>
         </div>
-        <button onClick={loadNews} style={{
-          display: "flex", alignItems: "center", gap: 6,
-          background: "var(--bg-elevated)", border: "1px solid var(--border)",
-          borderRadius: "var(--radius-sm)", padding: "0.4rem 0.9rem",
-          color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
-        }}>
+        <button
+          onClick={() => fetchNews(weekOffset === 0 ? "current" : "next")}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            background: "var(--bg-elevated)", border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)", padding: "0.4rem 0.9rem",
+            color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
+          }}
+        >
           <RefreshCw size={13} /> Aggiorna
         </button>
       </div>
@@ -275,33 +268,22 @@ export function News() {
 
       {/* Contenuto */}
       {loading ? <Spinner /> : error ? (
-        <div style={{
-          textAlign: "center", padding: "3rem",
-          border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)",
-          color: "var(--text-muted)",
-        }}>
+        <div style={{ textAlign: "center", padding: "3rem", border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)", color: "var(--text-muted)" }}>
           <div style={{ fontSize: 32, marginBottom: "1rem" }}>⚠️</div>
           <div style={{ color: "var(--danger)", marginBottom: 8 }}>{error}</div>
-          <button onClick={loadNews} style={{
+          <button onClick={() => fetchNews(weekOffset === 0 ? "current" : "next")} style={{
             marginTop: "1rem", padding: "0.5rem 1rem",
             background: "var(--bg-elevated)", border: "1px solid var(--border)",
-            borderRadius: "var(--radius-sm)", color: "var(--text-secondary)",
-            cursor: "pointer", fontSize: 13,
+            borderRadius: "var(--radius-sm)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
           }}>
             Riprova
           </button>
         </div>
       ) : byDay.length === 0 ? (
-        <div style={{
-          textAlign: "center", padding: "3rem",
-          border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)",
-          color: "var(--text-muted)",
-        }}>
+        <div style={{ textAlign: "center", padding: "3rem", border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)", color: "var(--text-muted)" }}>
           <div style={{ fontSize: 32, marginBottom: "1rem" }}>📰</div>
           <div>Nessun evento high impact per questa settimana</div>
-          {currencyFilter !== "TUTTI" && (
-            <div style={{ marginTop: 8, fontSize: 12 }}>Prova a rimuovere il filtro valuta</div>
-          )}
+          {currencyFilter !== "TUTTI" && <div style={{ marginTop: 8, fontSize: 12 }}>Prova a rimuovere il filtro valuta</div>}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
@@ -322,11 +304,7 @@ export function News() {
                 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     {isToday && (
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, color: "var(--accent)",
-                        background: "var(--accent-dim)", padding: "2px 6px",
-                        borderRadius: 3, letterSpacing: "0.05em",
-                      }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", background: "var(--accent-dim)", padding: "2px 6px", borderRadius: 3, letterSpacing: "0.05em" }}>
                         OGGI
                       </span>
                     )}
@@ -334,11 +312,7 @@ export function News() {
                       {label}
                     </span>
                   </div>
-                  <span style={{
-                    fontSize: 11, fontFamily: "var(--font-data)",
-                    background: "var(--danger-dim)", color: "var(--danger)",
-                    padding: "2px 8px", borderRadius: 4,
-                  }}>
+                  <span style={{ fontSize: 11, fontFamily: "var(--font-data)", background: "var(--danger-dim)", color: "var(--danger)", padding: "2px 8px", borderRadius: 4 }}>
                     {events.length} evento{events.length > 1 ? "i" : ""}
                   </span>
                 </div>
