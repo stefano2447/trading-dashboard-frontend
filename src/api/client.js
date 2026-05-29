@@ -120,6 +120,11 @@ export const api = {
     return data.configs;
   },
 
+  deleteAccount: async (accountId) => {
+  if (USE_MOCK) return { status: "ok" };
+  return request(`/api/accounts/${accountId}`, { method: "DELETE" });
+  },
+
   saveEAConfig: async (eaName, fields) => {
     if (USE_MOCK) {
       try {

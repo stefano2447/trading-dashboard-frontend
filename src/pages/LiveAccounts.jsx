@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { RefreshCw, Settings, X, Activity, ChevronDown, ChevronUp } from "lucide-react";
+import { RefreshCw, Settings, X, Activity, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
 import { api } from "../api/client";
 import { Spinner } from "../components/ui/Spinner";
 
@@ -60,14 +60,14 @@ function ProgressBar({ pct, color, label, sublabel }) {
 // ─── Modale configurazione ────────────────────────────────────────────────────
 function ConfigModal({ account, onClose, onSave }) {
   const [form, setForm] = useState({
-    name:               account.name || account.id,
-    broker:             account.broker || "",
-    account_type:       account.account_type || "Demo",
-    initial_balance:    account.initial_balance || "",
-    max_daily_dd_pct:   account.max_daily_dd_pct || "",
-    max_total_dd_pct:   account.max_total_dd_pct || "",
-    profit_target_pct:  account.profit_target_pct || "",
-    max_margin_used_pct:account.max_margin_used_pct || "",
+    name:                account.name || account.id,
+    broker:              account.broker || "",
+    account_type:        account.account_type || "Demo",
+    initial_balance:     account.initial_balance || "",
+    max_daily_dd_pct:    account.max_daily_dd_pct || "",
+    max_total_dd_pct:    account.max_total_dd_pct || "",
+    profit_target_pct:   account.profit_target_pct || "",
+    max_margin_used_pct: account.max_margin_used_pct || "",
   });
 
   const isProp = form.account_type === "Prop";
@@ -99,8 +99,6 @@ function ConfigModal({ account, onClose, onSave }) {
         borderRadius: "var(--radius-lg)", padding: "1.5rem",
         width: "100%", maxWidth: 460, maxHeight: "90vh", overflowY: "auto",
       }}>
-
-        {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.25rem" }}>
           <div>
             <h2 style={{ fontSize: 16, fontWeight: 600 }}>Configura conto</h2>
@@ -114,67 +112,39 @@ function ConfigModal({ account, onClose, onSave }) {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem" }}>
-
-          {/* Nome leggibile */}
           <div>
             <label style={labelStyle}>NOME LEGGIBILE</label>
-            <input
-              name="name" value={form.name} onChange={handleChange}
-              placeholder="es. FTMO 10K Challenge"
-              style={inputStyle}
-            />
+            <input name="name" value={form.name} onChange={handleChange} placeholder="es. FTMO 10K Challenge" style={inputStyle} />
           </div>
-
-          {/* Broker */}
           <div>
             <label style={labelStyle}>BROKER</label>
-            <input
-              name="broker" value={form.broker} onChange={handleChange}
-              placeholder="es. FTMO, The5ers, Axi..."
-              style={inputStyle}
-            />
+            <input name="broker" value={form.broker} onChange={handleChange} placeholder="es. FTMO, The5ers, Axi..." style={inputStyle} />
           </div>
-
-          {/* Tipo conto */}
           <div>
             <label style={labelStyle}>TIPO CONTO</label>
             <div style={{ display: "flex", gap: "0.5rem" }}>
               {["Live", "Prop", "Demo", "Altro"].map(type => (
-                <button
-                  key={type}
-                  onClick={() => setForm(f => ({ ...f, account_type: type }))}
-                  style={{
-                    flex: 1, padding: "0.4rem", fontSize: 13,
-                    borderRadius: "var(--radius-sm)",
-                    border: "1px solid var(--border)",
-                    background: form.account_type === type ? "var(--accent-dim)" : "var(--bg-elevated)",
-                    color: form.account_type === type ? "var(--accent)" : "var(--text-secondary)",
-                    cursor: "pointer",
-                  }}
-                >
+                <button key={type} onClick={() => setForm(f => ({ ...f, account_type: type }))} style={{
+                  flex: 1, padding: "0.4rem", fontSize: 13,
+                  borderRadius: "var(--radius-sm)", border: "1px solid var(--border)",
+                  background: form.account_type === type ? "var(--accent-dim)" : "var(--bg-elevated)",
+                  color: form.account_type === type ? "var(--accent)" : "var(--text-secondary)",
+                  cursor: "pointer",
+                }}>
                   {type}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* Parametri prop */}
           {isProp && (
             <>
               <div style={{ height: 1, background: "var(--border)", margin: "0.25rem 0" }} />
-              <div style={{ fontSize: 11, color: "var(--text-muted)", letterSpacing: "0.05em" }}>
-                PARAMETRI PROP FIRM
-              </div>
-
+              <div style={{ fontSize: 11, color: "var(--text-muted)", letterSpacing: "0.05em" }}>PARAMETRI PROP FIRM</div>
               <div>
-                <label style={labelStyle}>BALANCE INIZIALE (al momento del finanziamento)</label>
-                <input
-                  name="initial_balance" value={form.initial_balance}
-                  onChange={handleChange} placeholder="es. 10000"
-                  type="number" style={inputStyle}
-                />
+                <label style={labelStyle}>BALANCE INIZIALE</label>
+                <input name="initial_balance" value={form.initial_balance} onChange={handleChange} placeholder="es. 10000" type="number" style={inputStyle} />
               </div>
-
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
                 <div>
                   <label style={labelStyle}>MAX DD GIORNALIERO (%)</label>
@@ -185,7 +155,6 @@ function ConfigModal({ account, onClose, onSave }) {
                   <input name="max_total_dd_pct" value={form.max_total_dd_pct} onChange={handleChange} placeholder="es. 10" type="number" style={inputStyle} />
                 </div>
               </div>
-
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "0.75rem" }}>
                 <div>
                   <label style={labelStyle}>TARGET PROFITTO (%)</label>
@@ -199,22 +168,17 @@ function ConfigModal({ account, onClose, onSave }) {
             </>
           )}
 
-          {/* Bottoni */}
           <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
             <button onClick={onClose} style={{
               flex: 1, padding: "0.6rem", borderRadius: "var(--radius-sm)",
               border: "1px solid var(--border)", background: "var(--bg-elevated)",
               color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
-            }}>
-              Annulla
-            </button>
+            }}>Annulla</button>
             <button onClick={() => { onSave(account.id, form); onClose(); }} style={{
               flex: 1, padding: "0.6rem", borderRadius: "var(--radius-sm)",
               border: "none", background: "var(--accent)",
               color: "#000", cursor: "pointer", fontSize: 13, fontWeight: 600,
-            }}>
-              Salva
-            </button>
+            }}>Salva</button>
           </div>
         </div>
       </div>
@@ -223,26 +187,20 @@ function ConfigModal({ account, onClose, onSave }) {
 }
 
 // ─── Card singolo conto ───────────────────────────────────────────────────────
-function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
-  const [paused, setPaused]         = useState(false);
-  const [confirming, setConfirming] = useState(false);
+function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete }) {
+  const [paused, setPaused]               = useState(false);
+  const [confirming, setConfirming]       = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [showPositions, setShowPositions] = useState(true);
 
-  const isProp      = account.account_type === "Prop";
-  const ddPct       = ddPercent(account);
-  const dailyPct    = dailyDdPercent(account);
-  const tgtPct      = targetPercent(account);
-  const equityPnL   = (account.equity || 0) - (account.balance || 0);
+  const isProp       = account.account_type === "Prop";
+  const ddPct        = ddPercent(account);
+  const dailyPct     = dailyDdPercent(account);
+  const tgtPct       = targetPercent(account);
+  const equityPnL    = (account.equity || 0) - (account.balance || 0);
   const hasPositions = account.open_positions?.length > 0;
   const totalOpenPnL = account.open_positions?.reduce((s, p) => s + (p.profit || 0), 0) || 0;
-
   const isConfigured = account.account_type !== "Demo" || account.name !== account.id;
-
-  function handleCloseAll() {
-    if (!confirming) { setConfirming(true); return; }
-    setConfirming(false);
-    onCloseAll(account.id);
-  }
 
   const typeColor = account.account_type === "Prop"  ? "var(--warning)"
                   : account.account_type === "Live"  ? "var(--accent)"
@@ -254,10 +212,9 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
       border: `1px solid ${!isConfigured ? "var(--warning)" : "var(--border)"}`,
       borderRadius: "var(--radius-lg)", padding: "1.25rem",
       display: "flex", flexDirection: "column", gap: "1rem",
-      position: "relative",
     }}>
 
-      {/* Banner "non configurato" */}
+      {/* Banner non configurato */}
       {!isConfigured && (
         <div style={{
           background: "var(--warning-dim)", border: "1px solid var(--warning)",
@@ -285,13 +242,9 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
               {account.platform}
             </span>
           </div>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>
-            {account.name || account.id}
-          </div>
+          <div style={{ fontSize: 16, fontWeight: 600 }}>{account.name || account.id}</div>
           {account.name && account.name !== account.id && (
-            <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-data)" }}>
-              {account.id}
-            </div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-data)" }}>{account.id}</div>
           )}
           {account.broker && (
             <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{account.broker}</div>
@@ -299,7 +252,6 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
-          {/* Indicatore live */}
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <div style={{
               width: 7, height: 7, borderRadius: "50%",
@@ -310,16 +262,12 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
               {paused ? "In pausa" : "Live"}
             </span>
           </div>
-          {/* Tasto configura */}
-          <button
-            onClick={() => onConfigure(account)}
-            style={{
-              display: "flex", alignItems: "center", gap: 4,
-              background: "var(--bg-elevated)", border: "1px solid var(--border)",
-              borderRadius: "var(--radius-sm)", padding: "0.3rem 0.6rem",
-              color: "var(--text-secondary)", cursor: "pointer", fontSize: 11,
-            }}
-          >
+          <button onClick={() => onConfigure(account)} style={{
+            display: "flex", alignItems: "center", gap: 4,
+            background: "var(--bg-elevated)", border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)", padding: "0.3rem 0.6rem",
+            color: "var(--text-secondary)", cursor: "pointer", fontSize: 11,
+          }}>
             <Settings size={11} /> Configura
           </button>
         </div>
@@ -376,47 +324,47 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
         </div>
       )}
 
-{/* Barre prop */}
-{isProp && (ddPct !== null || dailyPct !== null || tgtPct !== null) && (
-  <div style={{ borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
-  {ddPct !== null && (() => {
-  const currentDD = Math.max(0, account.initial_balance - account.balance);
-  const maxDD = account.initial_balance * (account.max_total_dd_pct / 100);
-  return (
-    <ProgressBar
-      pct={ddPct}
-      color={ddPct > 70 ? "var(--danger)" : "var(--warning)"}
-      label="DD Totale usato"
-      sublabel={`$${currentDD.toFixed(0)} / $${maxDD.toFixed(0)} (limite ${account.max_total_dd_pct}%)`}
-    />
-  );
-})()}
-{dailyPct !== null && (() => {
-  const usedDD = Math.abs(Math.min(0, account.daily_pnl || 0));
-  const maxDailyDD = account.initial_balance * (account.max_daily_dd_pct / 100);
-  return (
-    <ProgressBar
-      pct={dailyPct}
-      color={dailyPct > 70 ? "var(--danger)" : "var(--warning)"}
-      label="DD Giornaliero usato"
-      sublabel={`$${usedDD.toFixed(0)} / $${maxDailyDD.toFixed(0)} (limite ${account.max_daily_dd_pct}%)`}
-    />
-  );
-})()}
-    {tgtPct !== null && (() => {
-      const profit = Math.max(0, (account.balance || 0) - account.initial_balance);
-      const target = account.initial_balance * (account.profit_target_pct / 100);
-      return (
-        <ProgressBar
-          pct={tgtPct}
-          color="var(--accent)"
-          label="Target profitto"
-          sublabel={`$${profit.toFixed(0)} / $${target.toFixed(0)} (target ${account.profit_target_pct}%)`}
-        />
-      );
-    })()}
-  </div>
-)}
+      {/* Barre prop */}
+      {isProp && (ddPct !== null || dailyPct !== null || tgtPct !== null) && (
+        <div style={{ borderTop: "1px solid var(--border)", paddingTop: "0.75rem" }}>
+          {ddPct !== null && (() => {
+            const currentDD = Math.max(0, account.initial_balance - account.balance);
+            const maxDD = account.initial_balance * (account.max_total_dd_pct / 100);
+            return (
+              <ProgressBar
+                pct={ddPct}
+                color={ddPct > 70 ? "var(--danger)" : "var(--warning)"}
+                label="DD Totale usato"
+                sublabel={`$${currentDD.toFixed(0)} / $${maxDD.toFixed(0)} (limite ${account.max_total_dd_pct}%)`}
+              />
+            );
+          })()}
+          {dailyPct !== null && (() => {
+            const usedDD = Math.abs(Math.min(0, account.daily_pnl || 0));
+            const maxDailyDD = account.initial_balance * (account.max_daily_dd_pct / 100);
+            return (
+              <ProgressBar
+                pct={dailyPct}
+                color={dailyPct > 70 ? "var(--danger)" : "var(--warning)"}
+                label="DD Giornaliero usato"
+                sublabel={`$${usedDD.toFixed(0)} / $${maxDailyDD.toFixed(0)} (limite ${account.max_daily_dd_pct}%)`}
+              />
+            );
+          })()}
+          {tgtPct !== null && (() => {
+            const profit = Math.max(0, (account.balance || 0) - account.initial_balance);
+            const target = account.initial_balance * (account.profit_target_pct / 100);
+            return (
+              <ProgressBar
+                pct={tgtPct}
+                color="var(--accent)"
+                label="Target profitto"
+                sublabel={`$${profit.toFixed(0)} / $${target.toFixed(0)} (target ${account.profit_target_pct}%)`}
+              />
+            );
+          })()}
+        </div>
+      )}
 
       {/* Posizioni aperte */}
       {hasPositions ? (
@@ -426,13 +374,9 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
           background: totalOpenPnL >= 0 ? "rgba(61,214,140,0.06)" : "rgba(224,82,82,0.06)",
           overflow: "hidden",
         }}>
-          {/* Header posizioni — cliccabile per collapse */}
           <div
             onClick={() => setShowPositions(s => !s)}
-            style={{
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-              padding: "0.65rem 0.75rem", cursor: "pointer",
-            }}
+            style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.65rem 0.75rem", cursor: "pointer" }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <div style={{
@@ -456,7 +400,6 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
             </div>
           </div>
 
-          {/* Lista posizioni */}
           {showPositions && (
             <div style={{ borderTop: `1px solid ${totalOpenPnL >= 0 ? "rgba(61,214,140,0.2)" : "rgba(224,82,82,0.2)"}` }}>
               {account.open_positions.map((pos, i) => (
@@ -476,12 +419,8 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
                     }}>
                       {pos.direction}
                     </span>
-                    <span style={{ fontSize: 13, color: "var(--text-primary)", fontWeight: 500 }}>
-                      {pos.symbol}
-                    </span>
-                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                      {pos.lots} lot
-                    </span>
+                    <span style={{ fontSize: 13, color: "var(--text-primary)", fontWeight: 500 }}>{pos.symbol}</span>
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{pos.lots} lot</span>
                   </div>
                   <span style={{ fontFamily: "var(--font-data)", fontSize: 13, fontWeight: 600, color: pnlColor(pos.profit) }}>
                     {fmtProfit(pos.profit)}
@@ -494,10 +433,8 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
       ) : (
         <div style={{
           display: "flex", alignItems: "center", gap: 6,
-          padding: "0.55rem 0.75rem",
-          borderRadius: "var(--radius-sm)",
-          background: "var(--bg-elevated)",
-          border: "1px solid var(--border)",
+          padding: "0.55rem 0.75rem", borderRadius: "var(--radius-sm)",
+          background: "var(--bg-elevated)", border: "1px solid var(--border)",
         }}>
           <div style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--text-muted)" }} />
           <span style={{ fontSize: 11, color: "var(--text-muted)" }}>Nessuna posizione aperta</span>
@@ -507,7 +444,8 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
 
       {/* Pulsanti azione */}
-      <div style={{ display: "flex", gap: "0.5rem" }}>
+      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+        {/* Pausa EA */}
         <button
           onClick={() => { setPaused(p => !p); onTogglePause(account.id); }}
           style={{
@@ -523,8 +461,13 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
           {paused ? "Riprendi EA" : "Pausa EA"}
         </button>
 
+        {/* Chiudi trade */}
         <button
-          onClick={handleCloseAll}
+          onClick={() => {
+            if (!confirming) { setConfirming(true); return; }
+            setConfirming(false);
+            onCloseAll(account.id);
+          }}
           onMouseLeave={() => setConfirming(false)}
           style={{
             flex: 1, padding: "0.5rem", fontSize: 12,
@@ -539,6 +482,28 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
           <X size={13} />
           {confirming ? "Conferma chiusura" : "Chiudi trade"}
         </button>
+
+        {/* Elimina conto */}
+        <button
+          onClick={() => {
+            if (!confirmDelete) { setConfirmDelete(true); return; }
+            setConfirmDelete(false);
+            onDelete(account.id);
+          }}
+          onMouseLeave={() => setConfirmDelete(false)}
+          style={{
+            flex: 1, padding: "0.5rem", fontSize: 12,
+            borderRadius: "var(--radius-sm)",
+            border: `1px solid ${confirmDelete ? "var(--danger)" : "var(--border)"}`,
+            background: confirmDelete ? "var(--danger-dim)" : "var(--bg-elevated)",
+            color: confirmDelete ? "var(--danger)" : "var(--text-muted)",
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+            transition: "all 0.15s",
+          }}
+        >
+          <Trash2 size={13} />
+          {confirmDelete ? "Conferma eliminazione" : "Elimina conto"}
+        </button>
       </div>
     </div>
   );
@@ -546,21 +511,14 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause }) {
 
 // ─── Componente principale ────────────────────────────────────────────────────
 export function LiveAccounts() {
-  const [accounts, setAccounts]         = useState([]);
-  const [loading, setLoading]           = useState(true);
+  const [accounts, setAccounts]                     = useState([]);
+  const [loading, setLoading]                       = useState(true);
   const [configuringAccount, setConfiguringAccount] = useState(null);
-  const [lastUpdate, setLastUpdate]     = useState(new Date());
+  const [lastUpdate, setLastUpdate]                 = useState(new Date());
 
   function loadAccounts() {
     api.getAccounts().then(data => {
-      const withPositions = data.map(acc => ({
-        ...acc,
-        open_positions: acc.open_pnl !== 0 ? [
-          { symbol: "XAUUSD", direction: "BUY",  lots: 0.10, profit: +(acc.open_pnl * 0.6).toFixed(2) },
-          { symbol: "XAUUSD", direction: "SELL", lots: 0.05, profit: +(acc.open_pnl * 0.4).toFixed(2) },
-        ] : [],
-      }));
-      setAccounts(withPositions);
+      setAccounts(data);
       setLoading(false);
       setLastUpdate(new Date());
     });
@@ -572,27 +530,23 @@ export function LiveAccounts() {
     return () => clearInterval(interval);
   }, []);
 
-async function handleSaveConfig(accountId, config) {
-  // Aggiornamento ottimistico
-  setAccounts(prev => prev.map(a =>
-    a.id === accountId ? { ...a, ...config } : a
-  ));
-  // Salva sul backend
-  try {
-    await api.updateAccount(accountId, {
-      name:                config.name,
-      broker:              config.broker,
-      account_type:        config.account_type,
-      initial_balance:     config.initial_balance ? parseFloat(config.initial_balance) : undefined,
-      max_daily_dd_pct:    config.max_daily_dd_pct ? parseFloat(config.max_daily_dd_pct) : undefined,
-      max_total_dd_pct:    config.max_total_dd_pct ? parseFloat(config.max_total_dd_pct) : undefined,
-      profit_target_pct:   config.profit_target_pct ? parseFloat(config.profit_target_pct) : undefined,
-      max_margin_used_pct: config.max_margin_used_pct ? parseFloat(config.max_margin_used_pct) : undefined,
-    });
-  } catch(e) {
-    console.error("Errore salvataggio account:", e);
+  async function handleSaveConfig(accountId, config) {
+    setAccounts(prev => prev.map(a => a.id === accountId ? { ...a, ...config } : a));
+    try {
+      await api.updateAccount(accountId, {
+        name:                config.name,
+        broker:              config.broker,
+        account_type:        config.account_type,
+        initial_balance:     config.initial_balance     ? parseFloat(config.initial_balance)     : undefined,
+        max_daily_dd_pct:    config.max_daily_dd_pct    ? parseFloat(config.max_daily_dd_pct)    : undefined,
+        max_total_dd_pct:    config.max_total_dd_pct    ? parseFloat(config.max_total_dd_pct)    : undefined,
+        profit_target_pct:   config.profit_target_pct   ? parseFloat(config.profit_target_pct)   : undefined,
+        max_margin_used_pct: config.max_margin_used_pct ? parseFloat(config.max_margin_used_pct) : undefined,
+      });
+    } catch(e) {
+      console.error("Errore salvataggio account:", e);
+    }
   }
-}
 
   const totalBalance   = accounts.reduce((s, a) => s + (a.balance   || 0), 0);
   const totalEquity    = accounts.reduce((s, a) => s + (a.equity    || 0), 0);
@@ -624,10 +578,10 @@ async function handleSaveConfig(accountId, config) {
       {/* Cards riepilogo */}
       <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
         {[
-          { label: "BALANCE TOTALE",   value: fmtCurrency(totalBalance),  color: "var(--text-primary)"         },
-          { label: "EQUITY TOTALE",    value: fmtCurrency(totalEquity),   color: pnlColor(totalEquity - totalBalance) },
-          { label: "PNL APERTO",       value: fmtProfit(totalOpenPnL),    color: pnlColor(totalOpenPnL)        },
-          { label: "PNL OGGI",         value: fmtProfit(totalDailyPnL),   color: pnlColor(totalDailyPnL)       },
+          { label: "BALANCE TOTALE",   value: fmtCurrency(totalBalance),  color: "var(--text-primary)"              },
+          { label: "EQUITY TOTALE",    value: fmtCurrency(totalEquity),   color: pnlColor(totalEquity - totalBalance)},
+          { label: "PNL APERTO",       value: fmtProfit(totalOpenPnL),    color: pnlColor(totalOpenPnL)             },
+          { label: "PNL OGGI",         value: fmtProfit(totalDailyPnL),   color: pnlColor(totalDailyPnL)            },
           { label: "POSIZIONI APERTE", value: openPositions,              color: openPositions > 0 ? "var(--warning)" : "var(--text-muted)" },
         ].map(({ label, value, color }) => (
           <div key={label} style={{
@@ -663,6 +617,10 @@ async function handleSaveConfig(accountId, config) {
               onConfigure={setConfiguringAccount}
               onCloseAll={id => api.closeAll(id)}
               onTogglePause={id => api.togglePause(id)}
+              onDelete={async (id) => {
+                await api.deleteAccount(id);
+                setAccounts(prev => prev.filter(a => a.id !== id));
+              }}
             />
           ))}
         </div>
