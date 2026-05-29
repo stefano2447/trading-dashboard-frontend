@@ -124,6 +124,12 @@ export const api = {
   if (USE_MOCK) return { status: "ok" };
   return request(`/api/accounts/${accountId}`, { method: "DELETE" });
   },
+  
+  getNews: async (week = "current") => {
+  if (USE_MOCK) return [];
+  const data = await request(`/api/news?week=${week}`);
+  return data.events || [];
+  },
 
   saveEAConfig: async (eaName, fields) => {
     if (USE_MOCK) {

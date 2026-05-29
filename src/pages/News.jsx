@@ -54,34 +54,18 @@ const CURRENCY_COLORS = {
 
 // ─── Fetch news da Forex Factory ─────────────────────────────────────────────
 
-async function fetchForexFactoryNews(from, to) {
-  // Forex Factory JSON API — attenzione: usa i parametri week
-  const url = `https://nfs.faireconomy.media/ff_calendar_thisweek.json`;
-
+async function loadNews() {
+  setLoading(true);
+  setError(null);
   try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-
-    // Filtra solo high impact (impact === "High")
-    return data.filter(event => event.impact === "High");
-  } catch (e) {
-    console.error("Errore fetch Forex Factory:", e);
-    return null;
+    const data = await api.getNews(weekOffset === 0 ? "current" : "next");
+    setNews(data);
+    setLastUpdate(new Date());
+  } catch(e) {
+    setError("Impossibile caricare le news da Forex Factory. Riprova tra qualche secondo.");
+    setNews([]);
   }
-}
-
-async function fetchForexFactoryNextWeek() {
-  const url = `https://nfs.faireconomy.media/ff_calendar_nextweek.json`;
-  try {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    return data.filter(event => event.impact === "High");
-  } catch (e) {
-    console.error("Errore fetch Forex Factory next week:", e);
-    return null;
-  }
+  setLoading(false);
 }
 
 // ─── Card singolo evento ──────────────────────────────────────────────────────
