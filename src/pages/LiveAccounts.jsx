@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { RefreshCw, Settings, X, Activity, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
+import { RefreshCw, Settings, X, Activity, ChevronDown, ChevronUp, Trash2, EyeOff, Eye } from "lucide-react";
 import { api } from "../api/client";
 import { Spinner } from "../components/ui/Spinner";
 
@@ -40,6 +40,15 @@ function targetPercent(account) {
   const target = account.initial_balance * (account.profit_target_pct / 100);
   const profit = (account.balance || 0) - account.initial_balance;
   return Math.min(Math.max((profit / target) * 100, 0), 100);
+}
+
+function sortAccounts(accounts) {
+  const order = { "Prop": 0, "Live": 1, "Demo": 2, "Altro": 3 };
+  return [...accounts].sort((a, b) => {
+    const ao = order[a.account_type] ?? 3;
+    const bo = order[b.account_type] ?? 3;
+    return ao - bo;
+  });
 }
 
 // ─── Progress bar ─────────────────────────────────────────────────────────────
@@ -187,7 +196,7 @@ function ConfigModal({ account, onClose, onSave }) {
 }
 
 // ─── Card singolo conto ───────────────────────────────────────────────────────
-function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete }) {
+function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete, onToggleHide }) {
   const [paused, setPaused]               = useState(false);
   const [confirming, setConfirming]       = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -206,12 +215,20 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
                   : account.account_type === "Live"  ? "var(--accent)"
                   : "var(--text-muted)";
 
+  // Sfondo leggermente diverso per le prop
+  const cardBg = isProp
+    ? "linear-gradient(135deg, var(--bg-surface) 0%, rgba(224,169,82,0.04) 100%)"
+    : "var(--bg-surface)";
+
+  const cardBorder = isProp ? "var(--warning)" : !isConfigured ? "var(--warning)" : "var(--border)";
+
   return (
     <div style={{
-      background: "var(--bg-surface)",
-      border: `1px solid ${!isConfigured ? "var(--warning)" : "var(--border)"}`,
+      background: cardBg,
+      border: `1px solid ${cardBorder}`,
       borderRadius: "var(--radius-lg)", padding: "1.25rem",
       display: "flex", flexDirection: "column", gap: "1rem",
+      boxShadow: isProp ? "0 0 20px rgba(224,169,82,0.05)" : "none",
     }}>
 
       {/* Banner non configurato */}
@@ -230,7 +247,7 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
         <div>
-          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: 3 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: 4 }}>
             <span style={{
               fontSize: 10, fontWeight: 600, letterSpacing: "0.06em",
               color: typeColor, background: `${typeColor}22`,
@@ -242,16 +259,20 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
               {account.platform}
             </span>
           </div>
-          <div style={{ fontSize: 16, fontWeight: 600 }}>{account.name || account.id}</div>
+          {/* Nome più grande */}
+          <div style={{ fontSize: 18, fontWeight: 700, color: "var(--text-primary)", lineHeight: 1.2 }}>
+            {account.name || account.id}
+          </div>
           {account.name && account.name !== account.id && (
-            <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-data)" }}>{account.id}</div>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", fontFamily: "var(--font-data)", marginTop: 2 }}>{account.id}</div>
           )}
           {account.broker && (
-            <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{account.broker}</div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>{account.broker}</div>
           )}
         </div>
 
         <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+          {/* Indicatore live */}
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <div style={{
               width: 7, height: 7, borderRadius: "50%",
@@ -262,6 +283,7 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
               {paused ? "In pausa" : "Live"}
             </span>
           </div>
+          {/* Tasto configura */}
           <button onClick={() => onConfigure(account)} style={{
             display: "flex", alignItems: "center", gap: 4,
             background: "var(--bg-elevated)", border: "1px solid var(--border)",
@@ -393,10 +415,7 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
               <span style={{ fontSize: 15, fontWeight: 700, fontFamily: "var(--font-data)", color: pnlColor(totalOpenPnL) }}>
                 {fmtProfit(totalOpenPnL)}
               </span>
-              {showPositions
-                ? <ChevronUp size={14} style={{ color: "var(--text-muted)" }} />
-                : <ChevronDown size={14} style={{ color: "var(--text-muted)" }} />
-              }
+              {showPositions ? <ChevronUp size={14} style={{ color: "var(--text-muted)" }} /> : <ChevronDown size={14} style={{ color: "var(--text-muted)" }} />}
             </div>
           </div>
 
@@ -463,11 +482,7 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
 
         {/* Chiudi trade */}
         <button
-          onClick={() => {
-            if (!confirming) { setConfirming(true); return; }
-            setConfirming(false);
-            onCloseAll(account.id);
-          }}
+          onClick={() => { if (!confirming) { setConfirming(true); return; } setConfirming(false); onCloseAll(account.id); }}
           onMouseLeave={() => setConfirming(false)}
           style={{
             flex: 1, padding: "0.5rem", fontSize: 12,
@@ -483,26 +498,38 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
           {confirming ? "Conferma chiusura" : "Chiudi trade"}
         </button>
 
-        {/* Elimina conto */}
+        {/* Nascondi */}
         <button
-          onClick={() => {
-            if (!confirmDelete) { setConfirmDelete(true); return; }
-            setConfirmDelete(false);
-            onDelete(account.id);
+          onClick={() => onToggleHide(account.id)}
+          title="Nascondi conto"
+          style={{
+            padding: "0.5rem 0.6rem", fontSize: 12,
+            borderRadius: "var(--radius-sm)",
+            border: "1px solid var(--border)",
+            background: "var(--bg-elevated)",
+            color: "var(--text-muted)",
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
           }}
+        >
+          <EyeOff size={13} />
+        </button>
+
+        {/* Elimina */}
+        <button
+          onClick={() => { if (!confirmDelete) { setConfirmDelete(true); return; } setConfirmDelete(false); onDelete(account.id); }}
           onMouseLeave={() => setConfirmDelete(false)}
           style={{
-            flex: 1, padding: "0.5rem", fontSize: 12,
+            padding: "0.5rem 0.6rem", fontSize: 12,
             borderRadius: "var(--radius-sm)",
             border: `1px solid ${confirmDelete ? "var(--danger)" : "var(--border)"}`,
             background: confirmDelete ? "var(--danger-dim)" : "var(--bg-elevated)",
             color: confirmDelete ? "var(--danger)" : "var(--text-muted)",
-            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5,
+            cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
             transition: "all 0.15s",
           }}
+          title={confirmDelete ? "Conferma eliminazione" : "Elimina conto"}
         >
           <Trash2 size={13} />
-          {confirmDelete ? "Conferma eliminazione" : "Elimina conto"}
         </button>
       </div>
     </div>
@@ -515,6 +542,25 @@ export function LiveAccounts() {
   const [loading, setLoading]                       = useState(true);
   const [configuringAccount, setConfiguringAccount] = useState(null);
   const [lastUpdate, setLastUpdate]                 = useState(new Date());
+  const [showHidden, setShowHidden]                 = useState(false);
+
+  // Conti nascosti salvati in localStorage
+  const [hiddenIds, setHiddenIds] = useState(() => {
+    try { return JSON.parse(localStorage.getItem("hidden_accounts") || "[]"); }
+    catch { return []; }
+  });
+
+  function saveHiddenIds(ids) {
+    setHiddenIds(ids);
+    localStorage.setItem("hidden_accounts", JSON.stringify(ids));
+  }
+
+  function toggleHide(accountId) {
+    const newIds = hiddenIds.includes(accountId)
+      ? hiddenIds.filter(id => id !== accountId)
+      : [...hiddenIds, accountId];
+    saveHiddenIds(newIds);
+  }
 
   function loadAccounts() {
     api.getAccounts().then(data => {
@@ -548,11 +594,19 @@ export function LiveAccounts() {
     }
   }
 
-  const totalBalance   = accounts.reduce((s, a) => s + (a.balance   || 0), 0);
-  const totalEquity    = accounts.reduce((s, a) => s + (a.equity    || 0), 0);
-  const totalDailyPnL  = accounts.reduce((s, a) => s + (a.daily_pnl || 0), 0);
-  const openPositions  = accounts.reduce((s, a) => s + (a.open_positions?.length || 0), 0);
-  const totalOpenPnL   = accounts.reduce((s, a) =>
+  // Filtra e ordina
+  const visibleAccounts = sortAccounts(
+    accounts.filter(a => showHidden ? hiddenIds.includes(a.id) : !hiddenIds.includes(a.id))
+  );
+  const hiddenCount = hiddenIds.filter(id => accounts.some(a => a.id === id)).length;
+
+  // Stats solo sui conti visibili non nascosti
+  const activeAccounts = accounts.filter(a => !hiddenIds.includes(a.id));
+  const totalBalance   = activeAccounts.reduce((s, a) => s + (a.balance   || 0), 0);
+  const totalEquity    = activeAccounts.reduce((s, a) => s + (a.equity    || 0), 0);
+  const totalDailyPnL  = activeAccounts.reduce((s, a) => s + (a.daily_pnl || 0), 0);
+  const openPositions  = activeAccounts.reduce((s, a) => s + (a.open_positions?.length || 0), 0);
+  const totalOpenPnL   = activeAccounts.reduce((s, a) =>
     s + (a.open_positions?.reduce((ss, p) => ss + (p.profit || 0), 0) || 0), 0);
 
   return (
@@ -562,67 +616,159 @@ export function LiveAccounts() {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 4 }}>Conti Live</h1>
           <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-            {accounts.length} conti · aggiornato alle {lastUpdate.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}
+            {activeAccounts.length} conti attivi · aggiornato alle {lastUpdate.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}
+            {hiddenCount > 0 && <span style={{ marginLeft: 8, color: "var(--text-muted)" }}>· {hiddenCount} nascosti</span>}
           </p>
         </div>
-        <button onClick={loadAccounts} style={{
-          display: "flex", alignItems: "center", gap: 6,
-          background: "var(--bg-elevated)", border: "1px solid var(--border)",
-          borderRadius: "var(--radius-sm)", padding: "0.4rem 0.9rem",
-          color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
-        }}>
-          <RefreshCw size={13} /> Aggiorna
-        </button>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          {/* Toggle nascosti */}
+          {hiddenCount > 0 && (
+            <button
+              onClick={() => setShowHidden(h => !h)}
+              style={{
+                display: "flex", alignItems: "center", gap: 6,
+                background: showHidden ? "var(--accent-dim)" : "var(--bg-elevated)",
+                border: `1px solid ${showHidden ? "var(--accent)" : "var(--border)"}`,
+                borderRadius: "var(--radius-sm)", padding: "0.4rem 0.9rem",
+                color: showHidden ? "var(--accent)" : "var(--text-secondary)",
+                cursor: "pointer", fontSize: 13,
+              }}
+            >
+              {showHidden ? <Eye size={13} /> : <EyeOff size={13} />}
+              {showHidden ? "Mostra attivi" : `Nascosti (${hiddenCount})`}
+            </button>
+          )}
+          <button onClick={loadAccounts} style={{
+            display: "flex", alignItems: "center", gap: 6,
+            background: "var(--bg-elevated)", border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)", padding: "0.4rem 0.9rem",
+            color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
+          }}>
+            <RefreshCw size={13} /> Aggiorna
+          </button>
+        </div>
       </div>
 
       {/* Cards riepilogo */}
-      <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
-        {[
-          { label: "BALANCE TOTALE",   value: fmtCurrency(totalBalance),  color: "var(--text-primary)"              },
-          { label: "EQUITY TOTALE",    value: fmtCurrency(totalEquity),   color: pnlColor(totalEquity - totalBalance)},
-          { label: "PNL APERTO",       value: fmtProfit(totalOpenPnL),    color: pnlColor(totalOpenPnL)             },
-          { label: "PNL OGGI",         value: fmtProfit(totalDailyPnL),   color: pnlColor(totalDailyPnL)            },
-          { label: "POSIZIONI APERTE", value: openPositions,              color: openPositions > 0 ? "var(--warning)" : "var(--text-muted)" },
-        ].map(({ label, value, color }) => (
-          <div key={label} style={{
-            background: "var(--bg-surface)", border: "1px solid var(--border)",
-            borderRadius: "var(--radius-md)", padding: "0.9rem 1.1rem",
-            flex: 1, minWidth: 130,
-          }}>
-            <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", marginBottom: 5 }}>{label}</div>
-            <div style={{ fontSize: 20, fontWeight: 600, fontFamily: "var(--font-data)", color }}>{value}</div>
-          </div>
-        ))}
-      </div>
+      {!showHidden && (
+        <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
+          {[
+            { label: "BALANCE TOTALE",   value: fmtCurrency(totalBalance),  color: "var(--text-primary)"               },
+            { label: "EQUITY TOTALE",    value: fmtCurrency(totalEquity),   color: pnlColor(totalEquity - totalBalance) },
+            { label: "PNL APERTO",       value: fmtProfit(totalOpenPnL),    color: pnlColor(totalOpenPnL)              },
+            { label: "PNL OGGI",         value: fmtProfit(totalDailyPnL),   color: pnlColor(totalDailyPnL)             },
+            { label: "POSIZIONI APERTE", value: openPositions,              color: openPositions > 0 ? "var(--warning)" : "var(--text-muted)" },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{
+              background: "var(--bg-surface)", border: "1px solid var(--border)",
+              borderRadius: "var(--radius-md)", padding: "0.9rem 1.1rem",
+              flex: 1, minWidth: 130,
+            }}>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", marginBottom: 5 }}>{label}</div>
+              <div style={{ fontSize: 20, fontWeight: 600, fontFamily: "var(--font-data)", color }}>{value}</div>
+            </div>
+          ))}
+        </div>
+      )}
 
-      {/* Griglia conti */}
-      {loading ? <Spinner /> : accounts.length === 0 ? (
+      {/* Separatore sezioni Prop / Altri */}
+      {loading ? <Spinner /> : visibleAccounts.length === 0 ? (
         <div style={{
           textAlign: "center", padding: "3rem",
           color: "var(--text-muted)", fontSize: 14,
           border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)",
         }}>
-          <div style={{ fontSize: 32, marginBottom: "1rem" }}>📡</div>
-          <div style={{ marginBottom: 8 }}>Nessun conto rilevato</div>
-          <div style={{ fontSize: 12 }}>
-            Carica l'EA Live Monitor su un conto MT5 — apparirà automaticamente qui al primo invio dati
+          <div style={{ fontSize: 32, marginBottom: "1rem" }}>
+            {showHidden ? "👁" : "📡"}
           </div>
+          <div style={{ marginBottom: 8 }}>
+            {showHidden ? "Nessun conto nascosto" : "Nessun conto rilevato"}
+          </div>
+          {!showHidden && (
+            <div style={{ fontSize: 12 }}>
+              Carica l'EA Live Monitor su un conto MT5 — apparirà automaticamente qui al primo invio dati
+            </div>
+          )}
         </div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
-          {accounts.map(account => (
-            <AccountCard
-              key={account.id}
-              account={account}
-              onConfigure={setConfiguringAccount}
-              onCloseAll={id => api.closeAll(id)}
-              onTogglePause={id => api.togglePause(id)}
-              onDelete={async (id) => {
-                await api.deleteAccount(id);
-                setAccounts(prev => prev.filter(a => a.id !== id));
-              }}
-            />
-          ))}
+        <div>
+          {/* Sezione Prop */}
+          {visibleAccounts.some(a => a.account_type === "Prop") && (
+            <div style={{ marginBottom: "1.5rem" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: "var(--warning)", marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 3, height: 14, background: "var(--warning)", borderRadius: 2 }} />
+                PROP FIRM
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
+                {visibleAccounts.filter(a => a.account_type === "Prop").map(account => (
+                  <AccountCard
+                    key={account.id}
+                    account={account}
+                    onConfigure={setConfiguringAccount}
+                    onCloseAll={id => api.closeAll(id)}
+                    onTogglePause={id => api.togglePause(id)}
+                    onToggleHide={toggleHide}
+                    onDelete={async (id) => {
+                      await api.deleteAccount(id);
+                      setAccounts(prev => prev.filter(a => a.id !== id));
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sezione Live */}
+          {visibleAccounts.some(a => a.account_type === "Live") && (
+            <div style={{ marginBottom: "1.5rem" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: "var(--accent)", marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 3, height: 14, background: "var(--accent)", borderRadius: 2 }} />
+                LIVE
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
+                {visibleAccounts.filter(a => a.account_type === "Live").map(account => (
+                  <AccountCard
+                    key={account.id}
+                    account={account}
+                    onConfigure={setConfiguringAccount}
+                    onCloseAll={id => api.closeAll(id)}
+                    onTogglePause={id => api.togglePause(id)}
+                    onToggleHide={toggleHide}
+                    onDelete={async (id) => {
+                      await api.deleteAccount(id);
+                      setAccounts(prev => prev.filter(a => a.id !== id));
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sezione Demo/Altro */}
+          {visibleAccounts.some(a => a.account_type !== "Prop" && a.account_type !== "Live") && (
+            <div>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.08em", color: "var(--text-muted)", marginBottom: "0.75rem", display: "flex", alignItems: "center", gap: 6 }}>
+                <div style={{ width: 3, height: 14, background: "var(--text-muted)", borderRadius: 2 }} />
+                DEMO / ALTRO
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
+                {visibleAccounts.filter(a => a.account_type !== "Prop" && a.account_type !== "Live").map(account => (
+                  <AccountCard
+                    key={account.id}
+                    account={account}
+                    onConfigure={setConfiguringAccount}
+                    onCloseAll={id => api.closeAll(id)}
+                    onTogglePause={id => api.togglePause(id)}
+                    onToggleHide={toggleHide}
+                    onDelete={async (id) => {
+                      await api.deleteAccount(id);
+                      setAccounts(prev => prev.filter(a => a.id !== id));
+                    }}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
