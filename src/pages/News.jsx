@@ -58,7 +58,6 @@ async function fetchFromProxies(week) {
     ? "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
     : "https://nfs.faireconomy.media/ff_calendar_nextweek.json";
 
-  // Controlla cache browser — valida 30 minuti
   const cacheKey = `news_${week}`;
   const now = Date.now();
   if (_cache[cacheKey] && now - _cache[cacheKey].ts < 30 * 60 * 1000) {
@@ -66,53 +65,37 @@ async function fetchFromProxies(week) {
     return _cache[cacheKey].data;
   }
 
-  const proxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
-    `https://corsproxy.io/?${encodeURIComponent(target)}`,
-    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
-  ];
+  // allorigins restituisce {status:{...}, contents:"[...]"}
+  const alloriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(target)}`;
 
-  for (let i = 0; i < proxies.length; i++) {
-    try {
-      console.log(`[News] Tentativo proxy ${i + 1}: ${proxies[i].split("?")[0]}`);
-      const res = await fetch(proxies[i], {
-        headers: { "Accept": "application/json" },
-        // Timeout tramite AbortController
-        signal: AbortSignal.timeout(10000),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-
-      // Gestisce sia array diretto che oggetto wrappato
-      let data;
-      try {
-        const parsed = JSON.parse(text);
-        data = Array.isArray(parsed) ? parsed : (parsed.contents ? JSON.parse(parsed.contents) : null);
-      } catch {
-        throw new Error("JSON non valido");
-      }
-
-      if (!data || !Array.isArray(data)) throw new Error("Formato non valido");
-
-      const high = data.filter(e => e.impact === "High");
-      console.log(`[News] OK proxy ${i + 1} — ${high.length} eventi high impact`);
-
-      // Salva in cache
-      _cache[cacheKey] = { ts: now, data: high };
-      return high;
-    } catch (e) {
-      console.log(`[News] Proxy ${i + 1} fallito:`, e.message);
-      if (i < proxies.length - 1) await new Promise(r => setTimeout(r, 800));
+  try {
+    console.log(`[News] Fetch via allorigins`);
+    const res = await fetch(alloriginsUrl, {
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    
+    const wrapper = await res.json();
+    if (!wrapper.contents) throw new Error("Nessun contenuto da allorigins");
+    
+    const data = JSON.parse(wrapper.contents);
+    if (!Array.isArray(data)) throw new Error("Formato non valido");
+    
+    const high = data.filter(e => e.impact === "High");
+    console.log(`[News] OK — ${high.length} eventi high impact`);
+    _cache[cacheKey] = { ts: now, data: high };
+    return high;
+  } catch (e) {
+    console.log(`[News] allorigins fallito:`, e.message);
+    
+    // Usa cache vecchia se disponibile
+    if (_cache[cacheKey]) {
+      console.log(`[News] Uso cache vecchia`);
+      return _cache[cacheKey].data;
     }
+    
+    throw new Error(`Fetch fallito: ${e.message}`);
   }
-
-  // Se tutti i proxy falliscono, usa cache vecchia se disponibile
-  if (_cache[cacheKey]) {
-    console.log(`[News] Tutti proxy falliti, uso cache vecchia per ${week}`);
-    return _cache[cacheKey].data;
-  }
-
-  throw new Error("Tutti i proxy non disponibili");
 }
 
 // ─── Card evento ──────────────────────────────────────────────────────────────
