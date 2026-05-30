@@ -110,25 +110,45 @@ export function News() {
   const { monday, sunday } = getWeekRange(weekOffset);
 
   // fetchNews riceve la settimana esplicitamente — niente problemi di closure
-  const fetchNews = useCallback(async (week) => {
-    setLoading(true);
-    setError(null);
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const data = await api.getNews(week);
-        setNews(data);
-        setLastUpdate(new Date());
-        setLoading(false);
-        return;
-      } catch (e) {
-        console.log(`[News] Tentativo ${attempt}/3 fallito:`, e.message);
-        if (attempt < 3) await new Promise(r => setTimeout(r, 2000));
-      }
+ const fetchNews = useCallback(async (week) => {
+  setLoading(true);
+  setError(null);
+
+  const target = week === "current"
+    ? "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    : "https://nfs.faireconomy.media/ff_calendar_nextweek.json";
+
+  // Proxy CORS pubblici — il frontend può chiamarli direttamente
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
+    `https://corsproxy.io/?${encodeURIComponent(target)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
+  ];
+
+  for (let i = 0; i < proxies.length; i++) {
+    try {
+      console.log(`[News] Tentativo ${i + 1} via ${proxies[i].split("?")[0]}`);
+      const res = await fetch(proxies[i]);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+      const data = JSON.parse(text);
+      const high = Array.isArray(data)
+        ? data.filter(e => e.impact === "High")
+        : [];
+      setNews(high);
+      setLastUpdate(new Date());
+      setLoading(false);
+      return;
+    } catch (e) {
+      console.log(`[News] Proxy ${i + 1} fallito:`, e.message);
+      if (i < proxies.length - 1) await new Promise(r => setTimeout(r, 1000));
     }
-    setError("Impossibile caricare le news. Riprova tra qualche secondo.");
-    setNews([]);
-    setLoading(false);
-  }, []);
+  }
+
+  setError("Impossibile caricare le news. Riprova tra qualche secondo.");
+  setNews([]);
+  setLoading(false);
+}, []);
 
   useEffect(() => {
     fetchNews(weekOffset === 0 ? "current" : "next");
