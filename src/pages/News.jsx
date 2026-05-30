@@ -50,52 +50,29 @@ const CURRENCY_COLORS = {
   CAD: "#52b8e0", NZD: "#52e0a4", CNY: "#e05252",
 };
 
-// Cache in memoria nel browser — evita chiamate ripetute ai proxy
+// Cache in memoria nel browser
 const _cache = {};
 
-async function fetchFromProxies(week) {
-  const target = week === "current"
-    ? "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-    : "https://nfs.faireconomy.media/ff_calendar_nextweek.json";
-
+async function fetchNews(week) {
   const cacheKey = `news_${week}`;
   const now = Date.now();
   if (_cache[cacheKey] && now - _cache[cacheKey].ts < 30 * 60 * 1000) {
-    console.log(`[News] Cache browser hit per ${week}`);
     return _cache[cacheKey].data;
   }
 
-  // allorigins restituisce {status:{...}, contents:"[...]"}
-  const alloriginsUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(target)}`;
+  const res = await fetch(`/api/news?week=${week}`, {
+    signal: AbortSignal.timeout(20000),
+  });
 
-  try {
-    console.log(`[News] Fetch via allorigins`);
-    const res = await fetch(alloriginsUrl, {
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    
-    const wrapper = await res.json();
-    if (!wrapper.contents) throw new Error("Nessun contenuto da allorigins");
-    
-    const data = JSON.parse(wrapper.contents);
-    if (!Array.isArray(data)) throw new Error("Formato non valido");
-    
-    const high = data.filter(e => e.impact === "High");
-    console.log(`[News] OK — ${high.length} eventi high impact`);
-    _cache[cacheKey] = { ts: now, data: high };
-    return high;
-  } catch (e) {
-    console.log(`[News] allorigins fallito:`, e.message);
-    
-    // Usa cache vecchia se disponibile
-    if (_cache[cacheKey]) {
-      console.log(`[News] Uso cache vecchia`);
-      return _cache[cacheKey].data;
-    }
-    
-    throw new Error(`Fetch fallito: ${e.message}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.error || `HTTP ${res.status}`);
   }
+
+  const data = await res.json();
+  const high = data.events || [];
+  _cache[cacheKey] = { ts: now, data: high };
+  return high;
 }
 
 // ─── Card evento ──────────────────────────────────────────────────────────────
@@ -114,23 +91,23 @@ function NewsCard({ event, isNext }) {
       onMouseLeave={e => e.currentTarget.style.background = "transparent"}
     >
       {/* Ora */}
-      <div style={{ minWidth: 55, textAlign: "right", paddingTop: 1 }}>
-        <span style={{ fontFamily: "var(--font-data)", fontSize: 13, color: "var(--text-secondary)" }}>
+      <div style={{ minWidth: 55, textAlign: "right", paddingTop: 2 }}>
+        <span style={{ fontFamily: "var(--font-data)", fontSize: 14, color: "var(--text-secondary)" }}>
           {fmtTime(event.date)}
         </span>
       </div>
 
       {/* Dot rosso */}
-      <div style={{ display: "flex", alignItems: "center", paddingTop: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", paddingTop: 5 }}>
         <div style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--danger)", boxShadow: "0 0 7px var(--danger)", flexShrink: 0 }} />
       </div>
 
       {/* Badge valuta */}
       <div style={{
-        minWidth: 48, textAlign: "center", flexShrink: 0,
+        minWidth: 50, textAlign: "center", flexShrink: 0,
         background: `${currColor}22`, border: `1px solid ${currColor}55`,
         borderRadius: 5, padding: "3px 8px",
-        fontSize: 12, fontWeight: 700, fontFamily: "var(--font-data)", color: currColor,
+        fontSize: 13, fontWeight: 700, fontFamily: "var(--font-data)", color: currColor,
         marginTop: 1,
       }}>
         {event.currency}
@@ -138,11 +115,11 @@ function NewsCard({ event, isNext }) {
 
       {/* Titolo + dati */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)", marginBottom: 4, lineHeight: 1.3 }}>
+        <div style={{ fontSize: 15, fontWeight: 500, color: "var(--text-primary)", marginBottom: 5, lineHeight: 1.3 }}>
           {event.title}
         </div>
         {(event.forecast || event.previous || event.actual) && (
-          <div style={{ display: "flex", gap: "1.25rem", fontSize: 12, color: "var(--text-muted)", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "1.25rem", fontSize: 13, color: "var(--text-muted)", flexWrap: "wrap" }}>
             {event.forecast && (
               <span>Previsto: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)", fontWeight: 500 }}>{event.forecast}</span></span>
             )}
@@ -169,12 +146,13 @@ export function News() {
   const [lastUpdate, setLastUpdate]         = useState(null);
 
   const { monday, sunday } = getWeekRange(weekOffset);
+  const weekParam = weekOffset === 0 ? "current" : "next";
 
-  const fetchNews = useCallback(async (week) => {
+  const loadNews = useCallback(async (week) => {
     setLoading(true);
     setError(null);
     try {
-      const data = await fetchFromProxies(week);
+      const data = await fetchNews(week);
       setNews(data);
       setLastUpdate(new Date());
     } catch (e) {
@@ -186,28 +164,20 @@ export function News() {
   }, []);
 
   useEffect(() => {
-    const week = weekOffset === 0 ? "current" : "next";
-    fetchNews(week);
-  }, [weekOffset, fetchNews]);
+    setCurrencyFilter("TUTTI");
+    loadNews(weekOffset === 0 ? "current" : "next");
+  }, [weekOffset, loadNews]);
 
-  // Valute uniche presenti nei dati
   const currencies = useMemo(() => {
     const unique = [...new Set(news.map(e => e.currency).filter(Boolean))].sort();
     return ["TUTTI", ...unique];
   }, [news]);
 
-  // Reset filtro valuta quando cambia settimana
-  useEffect(() => {
-    setCurrencyFilter("TUTTI");
-  }, [weekOffset]);
+  const filtered = useMemo(() =>
+    currencyFilter === "TUTTI" ? news : news.filter(e => e.currency === currencyFilter),
+    [news, currencyFilter]
+  );
 
-  // Filtra per valuta selezionata
-  const filtered = useMemo(() => {
-    if (currencyFilter === "TUTTI") return news;
-    return news.filter(e => e.currency === currencyFilter);
-  }, [news, currencyFilter]);
-
-  // Raggruppa per giorno
   const byDay = useMemo(() => {
     const groups = {};
     for (const event of filtered) {
@@ -219,18 +189,12 @@ export function News() {
     return Object.values(groups).sort((a, b) => a.date - b.date);
   }, [filtered]);
 
-  // Eventi nelle prossime 2 ore
   const upcomingEvents = useMemo(() => {
     if (weekOffset !== 0) return [];
     const now  = new Date();
     const in2h = new Date(now.getTime() + 2 * 3600 * 1000);
-    return news.filter(e => {
-      const d = new Date(e.date);
-      return d >= now && d <= in2h;
-    });
+    return news.filter(e => { const d = new Date(e.date); return d >= now && d <= in2h; });
   }, [news, weekOffset]);
-
-  const currentWeek = weekOffset === 0 ? "current" : "next";
 
   return (
     <div>
@@ -244,7 +208,7 @@ export function News() {
           </p>
         </div>
         <button
-          onClick={() => fetchNews(currentWeek)}
+          onClick={() => loadNews(weekParam)}
           disabled={loading}
           style={{
             display: "flex", alignItems: "center", gap: 6,
@@ -323,40 +287,31 @@ export function News() {
           const color    = cur === "TUTTI" ? "var(--text-secondary)" : (CURRENCY_COLORS[cur] || "#888");
           const isActive = currencyFilter === cur;
           return (
-            <button
-              key={cur}
-              onClick={() => setCurrencyFilter(cur)}
-              style={{
-                padding: "0.3rem 0.85rem", fontSize: 13, fontFamily: cur === "TUTTI" ? "inherit" : "var(--font-data)",
-                borderRadius: "var(--radius-sm)",
-                border: `1px solid ${isActive ? (cur === "TUTTI" ? "var(--accent)" : color) : "var(--border)"}`,
-                background: isActive ? (cur === "TUTTI" ? "var(--accent-dim)" : `${color}22`) : "var(--bg-elevated)",
-                color: isActive ? (cur === "TUTTI" ? "var(--accent)" : color) : "var(--text-secondary)",
-                cursor: "pointer", fontWeight: isActive ? 700 : 400,
-                transition: "all 0.15s",
-              }}
-            >
+            <button key={cur} onClick={() => setCurrencyFilter(cur)} style={{
+              padding: "0.3rem 0.85rem", fontSize: 13,
+              fontFamily: cur === "TUTTI" ? "inherit" : "var(--font-data)",
+              borderRadius: "var(--radius-sm)",
+              border: `1px solid ${isActive ? (cur === "TUTTI" ? "var(--accent)" : color) : "var(--border)"}`,
+              background: isActive ? (cur === "TUTTI" ? "var(--accent-dim)" : `${color}22`) : "var(--bg-elevated)",
+              color: isActive ? (cur === "TUTTI" ? "var(--accent)" : color) : "var(--text-secondary)",
+              cursor: "pointer", fontWeight: isActive ? 700 : 400, transition: "all 0.15s",
+            }}>
               {cur}
             </button>
           );
         })}
       </div>
 
-      {/* Contenuto principale */}
-      {loading ? (
-        <Spinner />
-      ) : error ? (
+      {/* Contenuto */}
+      {loading ? <Spinner /> : error ? (
         <div style={{ textAlign: "center", padding: "3rem", border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)" }}>
           <div style={{ fontSize: 36, marginBottom: "1rem" }}>⚠️</div>
           <div style={{ color: "var(--danger)", marginBottom: "1rem", fontSize: 14 }}>{error}</div>
-          <button
-            onClick={() => fetchNews(currentWeek)}
-            style={{
-              padding: "0.5rem 1.25rem", background: "var(--bg-elevated)",
-              border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-              color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
-            }}
-          >
+          <button onClick={() => loadNews(weekParam)} style={{
+            padding: "0.5rem 1.25rem", background: "var(--bg-elevated)",
+            border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+            color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
+          }}>
             Riprova
           </button>
         </div>
@@ -366,9 +321,8 @@ export function News() {
           <div style={{ fontSize: 15 }}>Nessun evento high impact trovato</div>
           {currencyFilter !== "TUTTI" && (
             <div style={{ marginTop: 8, fontSize: 13 }}>
-              Prova a rimuovere il filtro valuta —{" "}
               <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => setCurrencyFilter("TUTTI")}>
-                mostra tutti
+                Rimuovi filtro valuta
               </span>
             </div>
           )}
@@ -384,37 +338,26 @@ export function News() {
                 borderRadius: "var(--radius-md)", overflow: "hidden",
                 boxShadow: isToday ? "0 0 14px rgba(61,214,140,0.09)" : "none",
               }}>
-                {/* Header giorno */}
                 <div style={{
-                  padding: "0.65rem 1.1rem",
+                  padding: "0.7rem 1.1rem",
                   background: isToday ? "rgba(61,214,140,0.08)" : "var(--bg-elevated)",
                   borderBottom: "1px solid var(--border)",
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     {isToday && (
-                      <span style={{
-                        fontSize: 10, fontWeight: 700, color: "var(--accent)",
-                        background: "var(--accent-dim)", padding: "2px 7px",
-                        borderRadius: 3, letterSpacing: "0.06em",
-                      }}>
+                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", background: "var(--accent-dim)", padding: "2px 7px", borderRadius: 3, letterSpacing: "0.06em" }}>
                         OGGI
                       </span>
                     )}
-                    <span style={{ fontSize: 14, fontWeight: 600, color: isToday ? "var(--accent)" : "var(--text-primary)" }}>
+                    <span style={{ fontSize: 15, fontWeight: 600, color: isToday ? "var(--accent)" : "var(--text-primary)" }}>
                       {label}
                     </span>
                   </div>
-                  <span style={{
-                    fontSize: 12, fontFamily: "var(--font-data)",
-                    background: "var(--danger-dim)", color: "var(--danger)",
-                    padding: "3px 10px", borderRadius: 4, fontWeight: 600,
-                  }}>
+                  <span style={{ fontSize: 12, fontFamily: "var(--font-data)", background: "var(--danger-dim)", color: "var(--danger)", padding: "3px 10px", borderRadius: 4, fontWeight: 600 }}>
                     {events.length} evento{events.length > 1 ? "i" : ""}
                   </span>
                 </div>
-
-                {/* Lista eventi */}
                 <div>
                   {events.map((event, i) => (
                     <NewsCard key={`${event.date}-${event.currency}-${i}`} event={event} isNext={weekOffset === 1} />
