@@ -82,7 +82,7 @@ async function doFetch(week) {
 
 // ─── Card singolo evento ──────────────────────────────────────────────────────
 function NewsCard({ event, isNext }) {
-  const cur       = event.currency || "???";
+  const cur       = event.country || "???";
   const currColor = CURRENCY_COLORS[cur] || "#888888";
   const isPast    = !isNext && new Date(event.date) < new Date();
 
@@ -190,7 +190,7 @@ export function News() {
     try {
       const { events, not_available } = await doFetch(week);
       setNews(events);
-      console.log("Primo evento:", JSON.stringify(events[0]));
+      
       setLastUpdate(new Date());
       if (not_available) {
         setError("Il calendario della prossima settimana non è ancora disponibile su Forex Factory. Riprova sabato sera.");
@@ -210,14 +210,14 @@ export function News() {
 
   // Valute presenti nei dati
   const currencies = useMemo(() => {
-    const set = new Set(news.map(e => e.currency).filter(Boolean));
+    const set = new Set(news.map(e => e.country).filter(Boolean));
     return ["TUTTI", ...[...set].sort()];
   }, [news]);
 
   // Filtra per valuta — usa confronto diretto su currency
   const filtered = useMemo(() => {
     if (currencyFilter === "TUTTI") return news;
-    return news.filter(e => e.currency === currencyFilter);
+    return news.filter(e => e.country === currencyFilter);
   }, [news, currencyFilter]);
 
   // Raggruppa per giorno
@@ -278,7 +278,7 @@ export function News() {
           <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#e05252", boxShadow: "0 0 8px #e05252", flexShrink: 0, animation: "pulse 2s infinite" }} />
           <span style={{ fontSize: 14, color: "#e05252", fontWeight: 600 }}>
             ⚠️ {upcomingEvents.length} evento{upcomingEvents.length > 1 ? "i" : ""} nelle prossime 2 ore:{" "}
-            {upcomingEvents.map(e => `${e.currency} — ${e.title}`).join(" · ")}
+            {upcomingEvents.map(e => `${e.country} — ${e.title}`).join(" · ")}
           </span>
         </div>
       )}
