@@ -41,25 +41,31 @@ function isExpiringSoon(dateStr) {
   return diffMs < 30 * 24 * 3600 * 1000;
 }
 
-function calcEquityCurve(trades, normFactor = 1) {
+// Normalizzazione per-trade
+function calcEquityCurve(trades, mode) {
   let equity = 0, peak = 0;
   return trades.map(t => {
-    const raw = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
-    equity += raw * normFactor;
+    const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
+    const val  = mode === "norm" ? raw * (0.01 / lots) : raw;
+    equity += val;
     if (equity > peak) peak = equity;
     const dd = Math.min(0, equity - peak);
     return {
-      date: new Date(t.close_time).toLocaleDateString("it-IT"),
-      equity: +equity.toFixed(2),
-      drawdown: +dd.toFixed(2),
+      date:      new Date(t.close_time).toLocaleDateString("it-IT"),
+      equity:    +equity.toFixed(2),
+      drawdown:  +dd.toFixed(2),
     };
   });
 }
 
-function calcMaxDD(trades) {
+function calcMaxDD(trades, norm = true) {
   let equity = 0, peak = 0, maxDD = 0;
   for (const t of trades) {
-    equity += t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
+    const val  = norm ? raw * (0.01 / lots) : raw;
+    equity += val;
     if (equity > peak) peak = equity;
     const dd = peak - equity;
     if (dd > maxDD) maxDD = dd;
@@ -243,43 +249,57 @@ export function EADetail() {
     });
   }, [eaName]);
 
-  const metrics = useMemo(() => {
-    if (!trades.length) return null;
-    const profits = trades.map(t => t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0)));
-    const wins    = profits.filter(p => p > 0);
-    const losses  = profits.filter(p => p < 0);
-    const total   = profits.reduce((s, p) => s + p, 0);
-    const grossW  = wins.reduce((s, p) => s + p, 0);
-    const grossL  = Math.abs(losses.reduce((s, p) => s + p, 0));
-    const avgLots = trades.reduce((s, t) => s + (t.lots || 0.01), 0) / trades.length;
-    const normFactor = 0.01 / avgLots;
-    const totalNorm  = total * normFactor;
-    const maxDD      = calcMaxDD(trades);
-    const maxDDNorm  = maxDD * normFactor;
-    const months     = monthsActive(trades[0]?.open_time);
-    const calmar     = months > 0 && maxDDNorm > 0 ? (totalNorm * (12 / months)) / maxDDNorm : null;
-    const retDD      = maxDDNorm > 0 ? totalNorm / maxDDNorm : null;
-    const pf         = grossL > 0 ? grossW / grossL : null;
-    const avgWin     = wins.length ? grossW / wins.length : 0;
-    const avgLoss    = losses.length ? grossL / losses.length : 0;
-    const avgRR      = avgLoss > 0 ? avgWin / avgLoss : null;
-    const expectancy = (wins.length / trades.length) * avgWin - (losses.length / trades.length) * avgLoss;
-    const maxCL      = calcMaxConsecLoss(trades);
-    return {
-      total, totalNorm, pf, wins: wins.length, losses: losses.length,
-      winRate: (wins.length / trades.length) * 100,
-      avgWin, avgLoss, avgRR, expectancy,
-      maxDD, maxDDNorm, calmar, retDD, maxCL, months, avgLots,
-      firstTrade: trades[0]?.open_time,
-      lastTrade:  trades[trades.length - 1]?.close_time,
-    };
-  }, [trades]);
+const metrics = useMemo(() => {
+  if (!trades.length) return null;
 
-  const equityCurve = useMemo(() => {
-    if (!trades.length || !metrics) return [];
-    const normFactor = equityMode === "norm" ? 0.01 / metrics.avgLots : 1;
-    return calcEquityCurve(trades, normFactor);
-  }, [trades, equityMode, metrics]);
+  // Normalizzazione per-trade
+  const profits_norm = trades.map(t => {
+    const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
+    return raw * (0.01 / lots);
+  });
+  const profits_raw = trades.map(t =>
+    t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0))
+  );
+
+  const wins   = profits_norm.filter(p => p > 0);
+  const losses = profits_norm.filter(p => p < 0);
+  const total  = profits_norm.reduce((s, p) => s + p, 0);
+  const totalRaw = profits_raw.reduce((s, p) => s + p, 0);
+
+  const grossW  = wins.reduce((s, p) => s + p, 0);
+  const grossL  = Math.abs(losses.reduce((s, p) => s + p, 0));
+  const pf      = grossL > 0 ? grossW / grossL : null;
+  const avgWin  = wins.length   ? grossW / wins.length   : 0;
+  const avgLoss = losses.length ? grossL / losses.length : 0;
+  const winRate = profits_norm.length ? (wins.length / profits_norm.length) * 100 : 0;
+  const avgRR   = avgLoss > 0 ? avgWin / avgLoss : null;
+  const expectancy = profits_norm.length
+    ? (wins.length / profits_norm.length) * avgWin - (losses.length / profits_norm.length) * avgLoss
+    : 0;
+
+  const maxDD    = calcMaxDD(trades, true);
+  const avgLots  = trades.reduce((s, t) => s + (t.lots || 0.01), 0) / trades.length;
+  const months   = monthsActive(trades[0]?.open_time);
+  const calmar   = months > 0 && maxDD > 0 ? (total * (12 / months)) / maxDD : null;
+  const retDD    = maxDD > 0 ? total / maxDD : null;
+  const maxCL    = calcMaxConsecLoss(trades);
+
+  return {
+    total, totalRaw, pf, winRate,
+    wins: wins.length, losses: losses.length,
+    avgWin, avgLoss, avgRR, expectancy,
+    maxDD, calmar, retDD, maxCL,
+    months, avgLots,
+    firstTrade: trades[0]?.open_time,
+    lastTrade:  trades[trades.length - 1]?.close_time,
+  };
+}, [trades]);
+
+ const equityCurve = useMemo(() => {
+  if (!trades.length) return [];
+  return calcEquityCurve(trades, equityMode);
+}, [trades, equityMode]);
 
   const heatmap  = useMemo(() => calcHeatmap(trades),  [trades]);
   const dayBar   = useMemo(() => calcDayBar(trades),   [trades]);

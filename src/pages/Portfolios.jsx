@@ -41,11 +41,10 @@ function calcPortfolioMetrics(selectedEANames, tradesByEA) {
   for (const name of selectedEANames) {
     const trades = (tradesByEA[name] || []).sort((a, b) => new Date(a.close_time) - new Date(b.close_time));
     if (!trades.length) continue;
-    const avgLots    = trades.reduce((s, t) => s + (t.lots || 0.01), 0) / trades.length;
-    const normFactor = 0.01 / avgLots;
     for (const t of trades) {
-      const raw = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
-      allTrades.push({ ...t, net_profit_norm: raw * normFactor });
+      const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+      const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
+      allTrades.push({ ...t, net_profit_norm: raw * (0.01 / lots) });
     }
   }
 
@@ -69,8 +68,8 @@ function calcPortfolioMetrics(selectedEANames, tradesByEA) {
       const dd = Math.min(0, equity - peak);
       if (peak - equity > maxDD) maxDD = peak - equity;
       return {
-        date: new Date(day).toLocaleDateString("it-IT"),
-        equity: +equity.toFixed(2),
+        date:     new Date(day).toLocaleDateString("it-IT"),
+        equity:   +equity.toFixed(2),
         drawdown: +dd.toFixed(2),
       };
     });
@@ -82,7 +81,7 @@ function calcPortfolioMetrics(selectedEANames, tradesByEA) {
   const grossW  = wins.reduce((s, p) => s + p, 0);
   const grossL  = Math.abs(losses.reduce((s, p) => s + p, 0));
   const pf      = grossL > 0 ? grossW / grossL : null;
-  const avgWin  = wins.length ? grossW / wins.length : 0;
+  const avgWin  = wins.length   ? grossW / wins.length   : 0;
   const avgLoss = losses.length ? grossL / losses.length : 0;
   const winRate = profits.length ? (wins.length / profits.length) * 100 : 0;
 

@@ -8,12 +8,15 @@ import { Spinner } from "../components/ui/Spinner";
 function aggregateByDay(trades) {
   const result = {};
   for (const t of trades) {
-    const ea  = t.ea_name;
-    const day = t.close_time?.slice(0, 10);
+    const ea   = t.ea_name;
+    const day  = t.close_time?.slice(0, 10);
     if (!ea || !day) continue;
+    const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
+    const norm = raw * (0.01 / lots);
     if (!result[ea]) result[ea] = {};
     if (!result[ea][day]) result[ea][day] = 0;
-    result[ea][day] += t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    result[ea][day] += norm;
   }
   return result;
 }
@@ -122,13 +125,23 @@ export function Correlations() {
 
   const allEANames = useMemo(() => Object.keys(tradesByEA), [tradesByEA]);
 
-  const daysByEA = useMemo(() => {
-    const result = {};
-    for (const [eaName, trades] of Object.entries(tradesByEA)) {
-      result[eaName] = aggregateByDay(trades)[eaName] || {};
+ const daysByEA = useMemo(() => {
+  const result = {};
+  for (const [eaName, trades] of Object.entries(tradesByEA)) {
+    const byDay = {};
+    for (const t of trades) {
+      const day  = t.close_time?.slice(0, 10);
+      if (!day) continue;
+      const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+      const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
+      const norm = raw * (0.01 / lots);
+      if (!byDay[day]) byDay[day] = 0;
+      byDay[day] += norm;
     }
-    return result;
-  }, [tradesByEA]);
+    result[eaName] = byDay;
+  }
+  return result;
+}, [tradesByEA]);
 
   const maxDDs = useMemo(() => {
     const r = {};
