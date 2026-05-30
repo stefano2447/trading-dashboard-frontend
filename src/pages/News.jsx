@@ -1,7 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
 import { Spinner } from "../components/ui/Spinner";
 import { RefreshCw, ChevronLeft, ChevronRight } from "lucide-react";
-import { api } from "../api/client";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -51,46 +50,125 @@ const CURRENCY_COLORS = {
   CAD: "#52b8e0", NZD: "#52e0a4", CNY: "#e05252",
 };
 
+// Cache in memoria nel browser — evita chiamate ripetute ai proxy
+const _cache = {};
+
+async function fetchFromProxies(week) {
+  const target = week === "current"
+    ? "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+    : "https://nfs.faireconomy.media/ff_calendar_nextweek.json";
+
+  // Controlla cache browser — valida 30 minuti
+  const cacheKey = `news_${week}`;
+  const now = Date.now();
+  if (_cache[cacheKey] && now - _cache[cacheKey].ts < 30 * 60 * 1000) {
+    console.log(`[News] Cache browser hit per ${week}`);
+    return _cache[cacheKey].data;
+  }
+
+  const proxies = [
+    `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
+    `https://corsproxy.io/?${encodeURIComponent(target)}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
+  ];
+
+  for (let i = 0; i < proxies.length; i++) {
+    try {
+      console.log(`[News] Tentativo proxy ${i + 1}: ${proxies[i].split("?")[0]}`);
+      const res = await fetch(proxies[i], {
+        headers: { "Accept": "application/json" },
+        // Timeout tramite AbortController
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const text = await res.text();
+
+      // Gestisce sia array diretto che oggetto wrappato
+      let data;
+      try {
+        const parsed = JSON.parse(text);
+        data = Array.isArray(parsed) ? parsed : (parsed.contents ? JSON.parse(parsed.contents) : null);
+      } catch {
+        throw new Error("JSON non valido");
+      }
+
+      if (!data || !Array.isArray(data)) throw new Error("Formato non valido");
+
+      const high = data.filter(e => e.impact === "High");
+      console.log(`[News] OK proxy ${i + 1} — ${high.length} eventi high impact`);
+
+      // Salva in cache
+      _cache[cacheKey] = { ts: now, data: high };
+      return high;
+    } catch (e) {
+      console.log(`[News] Proxy ${i + 1} fallito:`, e.message);
+      if (i < proxies.length - 1) await new Promise(r => setTimeout(r, 800));
+    }
+  }
+
+  // Se tutti i proxy falliscono, usa cache vecchia se disponibile
+  if (_cache[cacheKey]) {
+    console.log(`[News] Tutti proxy falliti, uso cache vecchia per ${week}`);
+    return _cache[cacheKey].data;
+  }
+
+  throw new Error("Tutti i proxy non disponibili");
+}
+
 // ─── Card evento ──────────────────────────────────────────────────────────────
 function NewsCard({ event, isNext }) {
-  const currColor = CURRENCY_COLORS[event.currency] || "var(--text-muted)";
+  const currColor = CURRENCY_COLORS[event.currency] || "#888";
   const isPast    = new Date(event.date) < new Date();
 
   return (
     <div
       style={{
         display: "flex", alignItems: "flex-start", gap: "1rem",
-        padding: "0.75rem 1rem", borderBottom: "1px solid var(--border)",
-        opacity: isPast && !isNext ? 0.5 : 1, transition: "background 0.1s",
+        padding: "0.9rem 1.1rem", borderBottom: "1px solid var(--border)",
+        opacity: isPast && !isNext ? 0.45 : 1, transition: "background 0.1s",
       }}
       onMouseEnter={e => e.currentTarget.style.background = "var(--bg-hover)"}
       onMouseLeave={e => e.currentTarget.style.background = "transparent"}
     >
-      <div style={{ minWidth: 50, textAlign: "right" }}>
-        <span style={{ fontFamily: "var(--font-data)", fontSize: 12, color: "var(--text-secondary)" }}>
+      {/* Ora */}
+      <div style={{ minWidth: 55, textAlign: "right", paddingTop: 1 }}>
+        <span style={{ fontFamily: "var(--font-data)", fontSize: 13, color: "var(--text-secondary)" }}>
           {fmtTime(event.date)}
         </span>
       </div>
-      <div style={{ display: "flex", alignItems: "center", paddingTop: 2 }}>
-        <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--danger)", boxShadow: "0 0 6px var(--danger)" }} />
+
+      {/* Dot rosso */}
+      <div style={{ display: "flex", alignItems: "center", paddingTop: 4 }}>
+        <div style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--danger)", boxShadow: "0 0 7px var(--danger)", flexShrink: 0 }} />
       </div>
+
+      {/* Badge valuta */}
       <div style={{
-        minWidth: 44, textAlign: "center",
-        background: `${currColor}22`, border: `1px solid ${currColor}44`,
-        borderRadius: 4, padding: "2px 6px",
-        fontSize: 11, fontWeight: 700, fontFamily: "var(--font-data)", color: currColor,
+        minWidth: 48, textAlign: "center", flexShrink: 0,
+        background: `${currColor}22`, border: `1px solid ${currColor}55`,
+        borderRadius: 5, padding: "3px 8px",
+        fontSize: 12, fontWeight: 700, fontFamily: "var(--font-data)", color: currColor,
+        marginTop: 1,
       }}>
         {event.currency}
       </div>
-      <div style={{ flex: 1 }}>
-        <div style={{ fontSize: 13, fontWeight: 500, color: "var(--text-primary)", marginBottom: 2 }}>
+
+      {/* Titolo + dati */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 500, color: "var(--text-primary)", marginBottom: 4, lineHeight: 1.3 }}>
           {event.title}
         </div>
         {(event.forecast || event.previous || event.actual) && (
-          <div style={{ display: "flex", gap: "1rem", fontSize: 11, color: "var(--text-muted)" }}>
-            {event.forecast && <span>Prev: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>{event.forecast}</span></span>}
-            {event.previous && <span>Prec: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>{event.previous}</span></span>}
-            {event.actual   && <span>Att: <span style={{ fontFamily: "var(--font-data)", color: "var(--accent)", fontWeight: 600 }}>{event.actual}</span></span>}
+          <div style={{ display: "flex", gap: "1.25rem", fontSize: 12, color: "var(--text-muted)", flexWrap: "wrap" }}>
+            {event.forecast && (
+              <span>Previsto: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)", fontWeight: 500 }}>{event.forecast}</span></span>
+            )}
+            {event.previous && (
+              <span>Precedente: <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)", fontWeight: 500 }}>{event.previous}</span></span>
+            )}
+            {event.actual && (
+              <span>Attuale: <span style={{ fontFamily: "var(--font-data)", color: "var(--accent)", fontWeight: 700 }}>{event.actual}</span></span>
+            )}
           </div>
         )}
       </div>
@@ -109,80 +187,67 @@ export function News() {
 
   const { monday, sunday } = getWeekRange(weekOffset);
 
-  // fetchNews riceve la settimana esplicitamente — niente problemi di closure
- const fetchNews = useCallback(async (week) => {
-  setLoading(true);
-  setError(null);
-
-  const target = week === "current"
-    ? "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
-    : "https://nfs.faireconomy.media/ff_calendar_nextweek.json";
-
-  // Proxy CORS pubblici — il frontend può chiamarli direttamente
-  const proxies = [
-    `https://api.allorigins.win/raw?url=${encodeURIComponent(target)}`,
-    `https://corsproxy.io/?${encodeURIComponent(target)}`,
-    `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(target)}`,
-  ];
-
-  for (let i = 0; i < proxies.length; i++) {
+  const fetchNews = useCallback(async (week) => {
+    setLoading(true);
+    setError(null);
     try {
-      console.log(`[News] Tentativo ${i + 1} via ${proxies[i].split("?")[0]}`);
-      const res = await fetch(proxies[i]);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const text = await res.text();
-      const data = JSON.parse(text);
-      const high = Array.isArray(data)
-        ? data.filter(e => e.impact === "High")
-        : [];
-      setNews(high);
+      const data = await fetchFromProxies(week);
+      setNews(data);
       setLastUpdate(new Date());
-      setLoading(false);
-      return;
     } catch (e) {
-      console.log(`[News] Proxy ${i + 1} fallito:`, e.message);
-      if (i < proxies.length - 1) await new Promise(r => setTimeout(r, 1000));
+      setError(`Impossibile caricare le news: ${e.message}`);
+      setNews([]);
+    } finally {
+      setLoading(false);
     }
-  }
-
-  setError("Impossibile caricare le news. Riprova tra qualche secondo.");
-  setNews([]);
-  setLoading(false);
-}, []);
+  }, []);
 
   useEffect(() => {
-    fetchNews(weekOffset === 0 ? "current" : "next");
+    const week = weekOffset === 0 ? "current" : "next";
+    fetchNews(week);
   }, [weekOffset, fetchNews]);
 
+  // Valute uniche presenti nei dati
   const currencies = useMemo(() => {
-    const unique = [...new Set(news.map(e => e.currency))].sort();
+    const unique = [...new Set(news.map(e => e.currency).filter(Boolean))].sort();
     return ["TUTTI", ...unique];
   }, [news]);
 
-  const filtered = useMemo(() =>
-    currencyFilter === "TUTTI" ? news : news.filter(e => e.currency === currencyFilter),
-    [news, currencyFilter]
-  );
+  // Reset filtro valuta quando cambia settimana
+  useEffect(() => {
+    setCurrencyFilter("TUTTI");
+  }, [weekOffset]);
 
+  // Filtra per valuta selezionata
+  const filtered = useMemo(() => {
+    if (currencyFilter === "TUTTI") return news;
+    return news.filter(e => e.currency === currencyFilter);
+  }, [news, currencyFilter]);
+
+  // Raggruppa per giorno
   const byDay = useMemo(() => {
     const groups = {};
     for (const event of filtered) {
       const d   = new Date(event.date);
-      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      const key = `${d.getFullYear()}-${String(d.getMonth()).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
       if (!groups[key]) groups[key] = { label: fmtDay(event.date), date: d, events: [] };
       groups[key].events.push(event);
     }
     return Object.values(groups).sort((a, b) => a.date - b.date);
   }, [filtered]);
 
+  // Eventi nelle prossime 2 ore
   const upcomingEvents = useMemo(() => {
+    if (weekOffset !== 0) return [];
     const now  = new Date();
     const in2h = new Date(now.getTime() + 2 * 3600 * 1000);
     return news.filter(e => {
       const d = new Date(e.date);
       return d >= now && d <= in2h;
     });
-  }, [news]);
+  }, [news, weekOffset]);
+
+  const currentWeek = weekOffset === 0 ? "current" : "next";
 
   return (
     <div>
@@ -191,34 +256,37 @@ export function News() {
         <div>
           <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 4 }}>News High Impact</h1>
           <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-            Solo eventi ad alto impatto (🔴 Forex Factory) · {filtered.length} eventi
+            Solo eventi 🔴 alto impatto Forex Factory · {filtered.length} eventi
             {lastUpdate && <span> · aggiornato alle {lastUpdate.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}</span>}
           </p>
         </div>
         <button
-          onClick={() => fetchNews(weekOffset === 0 ? "current" : "next")}
+          onClick={() => fetchNews(currentWeek)}
+          disabled={loading}
           style={{
             display: "flex", alignItems: "center", gap: 6,
             background: "var(--bg-elevated)", border: "1px solid var(--border)",
             borderRadius: "var(--radius-sm)", padding: "0.4rem 0.9rem",
-            color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
+            color: loading ? "var(--text-muted)" : "var(--text-secondary)",
+            cursor: loading ? "not-allowed" : "pointer", fontSize: 13,
           }}
         >
-          <RefreshCw size={13} /> Aggiorna
+          <RefreshCw size={13} style={{ animation: loading ? "spin 1s linear infinite" : "none" }} />
+          {loading ? "Caricamento..." : "Aggiorna"}
         </button>
       </div>
 
       {/* Alert eventi imminenti */}
-      {upcomingEvents.length > 0 && weekOffset === 0 && (
+      {upcomingEvents.length > 0 && (
         <div style={{
           background: "var(--danger-dim)", border: "1px solid var(--danger)",
           borderRadius: "var(--radius-md)", padding: "0.75rem 1rem",
           marginBottom: "1rem", display: "flex", alignItems: "center", gap: 8,
         }}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--danger)", boxShadow: "0 0 6px var(--danger)", animation: "pulse 2s infinite" }} />
-          <span style={{ fontSize: 13, color: "var(--danger)", fontWeight: 500 }}>
-            ⚠️ {upcomingEvents.length} evento{upcomingEvents.length > 1 ? "i" : ""} high impact nelle prossime 2 ore:{" "}
-            {upcomingEvents.map(e => `${e.currency} ${e.title}`).join(", ")}
+          <div style={{ width: 9, height: 9, borderRadius: "50%", background: "var(--danger)", boxShadow: "0 0 7px var(--danger)", flexShrink: 0, animation: "pulse 2s infinite" }} />
+          <span style={{ fontSize: 14, color: "var(--danger)", fontWeight: 500 }}>
+            ⚠️ {upcomingEvents.length > 1 ? `${upcomingEvents.length} eventi` : "1 evento"} high impact nelle prossime 2 ore:{" "}
+            {upcomingEvents.map(e => `${e.currency} — ${e.title}`).join(" · ")}
           </span>
         </div>
       )}
@@ -227,26 +295,26 @@ export function News() {
       <div style={{
         display: "flex", alignItems: "center", justifyContent: "space-between",
         background: "var(--bg-surface)", border: "1px solid var(--border)",
-        borderRadius: "var(--radius-md)", padding: "0.75rem 1rem", marginBottom: "1rem",
+        borderRadius: "var(--radius-md)", padding: "0.75rem 1.25rem", marginBottom: "1rem",
       }}>
         <button
           onClick={() => setWeekOffset(0)}
           disabled={weekOffset === 0}
           style={{
             background: "none", border: "none",
-            color: weekOffset === 0 ? "var(--text-muted)" : "var(--text-secondary)",
+            color: weekOffset === 0 ? "var(--text-muted)" : "var(--accent)",
             cursor: weekOffset === 0 ? "not-allowed" : "pointer",
-            display: "flex", alignItems: "center", gap: 4, fontSize: 13,
+            display: "flex", alignItems: "center", gap: 5, fontSize: 14, fontWeight: 500,
           }}
         >
-          <ChevronLeft size={16} /> Settimana corrente
+          <ChevronLeft size={17} /> Settimana corrente
         </button>
 
         <div style={{ textAlign: "center" }}>
-          <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 2 }}>
+          <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 3, letterSpacing: "0.05em" }}>
             {weekOffset === 0 ? "SETTIMANA CORRENTE" : "PROSSIMA SETTIMANA"}
           </div>
-          <div style={{ fontSize: 14, fontWeight: 600, fontFamily: "var(--font-data)", color: "var(--text-primary)" }}>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "var(--text-primary)" }}>
             {formatWeekLabel(monday, sunday)}
           </div>
         </div>
@@ -256,54 +324,71 @@ export function News() {
           disabled={weekOffset === 1}
           style={{
             background: "none", border: "none",
-            color: weekOffset === 1 ? "var(--text-muted)" : "var(--text-secondary)",
+            color: weekOffset === 1 ? "var(--text-muted)" : "var(--accent)",
             cursor: weekOffset === 1 ? "not-allowed" : "pointer",
-            display: "flex", alignItems: "center", gap: 4, fontSize: 13,
+            display: "flex", alignItems: "center", gap: 5, fontSize: 14, fontWeight: 500,
           }}
         >
-          Prossima settimana <ChevronRight size={16} />
+          Prossima settimana <ChevronRight size={17} />
         </button>
       </div>
 
       {/* Filtro valute */}
-      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1rem", flexWrap: "wrap", alignItems: "center" }}>
-        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Valuta:</span>
+      <div style={{ display: "flex", gap: "0.5rem", marginBottom: "1.25rem", flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 13, color: "var(--text-muted)" }}>Filtra:</span>
         {currencies.map(cur => {
-          const color    = CURRENCY_COLORS[cur] || "var(--text-secondary)";
+          const color    = cur === "TUTTI" ? "var(--text-secondary)" : (CURRENCY_COLORS[cur] || "#888");
           const isActive = currencyFilter === cur;
           return (
-            <button key={cur} onClick={() => setCurrencyFilter(cur)} style={{
-              padding: "0.25rem 0.75rem", fontSize: 12, fontFamily: "var(--font-data)",
-              borderRadius: "var(--radius-sm)",
-              border: `1px solid ${isActive ? color : "var(--border)"}`,
-              background: isActive ? `${color}22` : "var(--bg-elevated)",
-              color: isActive ? color : "var(--text-secondary)",
-              cursor: "pointer", fontWeight: isActive ? 600 : 400,
-            }}>
+            <button
+              key={cur}
+              onClick={() => setCurrencyFilter(cur)}
+              style={{
+                padding: "0.3rem 0.85rem", fontSize: 13, fontFamily: cur === "TUTTI" ? "inherit" : "var(--font-data)",
+                borderRadius: "var(--radius-sm)",
+                border: `1px solid ${isActive ? (cur === "TUTTI" ? "var(--accent)" : color) : "var(--border)"}`,
+                background: isActive ? (cur === "TUTTI" ? "var(--accent-dim)" : `${color}22`) : "var(--bg-elevated)",
+                color: isActive ? (cur === "TUTTI" ? "var(--accent)" : color) : "var(--text-secondary)",
+                cursor: "pointer", fontWeight: isActive ? 700 : 400,
+                transition: "all 0.15s",
+              }}
+            >
               {cur}
             </button>
           );
         })}
       </div>
 
-      {/* Contenuto */}
-      {loading ? <Spinner /> : error ? (
-        <div style={{ textAlign: "center", padding: "3rem", border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)", color: "var(--text-muted)" }}>
-          <div style={{ fontSize: 32, marginBottom: "1rem" }}>⚠️</div>
-          <div style={{ color: "var(--danger)", marginBottom: 8 }}>{error}</div>
-          <button onClick={() => fetchNews(weekOffset === 0 ? "current" : "next")} style={{
-            marginTop: "1rem", padding: "0.5rem 1rem",
-            background: "var(--bg-elevated)", border: "1px solid var(--border)",
-            borderRadius: "var(--radius-sm)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
-          }}>
+      {/* Contenuto principale */}
+      {loading ? (
+        <Spinner />
+      ) : error ? (
+        <div style={{ textAlign: "center", padding: "3rem", border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)" }}>
+          <div style={{ fontSize: 36, marginBottom: "1rem" }}>⚠️</div>
+          <div style={{ color: "var(--danger)", marginBottom: "1rem", fontSize: 14 }}>{error}</div>
+          <button
+            onClick={() => fetchNews(currentWeek)}
+            style={{
+              padding: "0.5rem 1.25rem", background: "var(--bg-elevated)",
+              border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+              color: "var(--text-secondary)", cursor: "pointer", fontSize: 13,
+            }}
+          >
             Riprova
           </button>
         </div>
       ) : byDay.length === 0 ? (
         <div style={{ textAlign: "center", padding: "3rem", border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)", color: "var(--text-muted)" }}>
-          <div style={{ fontSize: 32, marginBottom: "1rem" }}>📰</div>
-          <div>Nessun evento high impact per questa settimana</div>
-          {currencyFilter !== "TUTTI" && <div style={{ marginTop: 8, fontSize: 12 }}>Prova a rimuovere il filtro valuta</div>}
+          <div style={{ fontSize: 36, marginBottom: "1rem" }}>📰</div>
+          <div style={{ fontSize: 15 }}>Nessun evento high impact trovato</div>
+          {currencyFilter !== "TUTTI" && (
+            <div style={{ marginTop: 8, fontSize: 13 }}>
+              Prova a rimuovere il filtro valuta —{" "}
+              <span style={{ color: "var(--accent)", cursor: "pointer" }} onClick={() => setCurrencyFilter("TUTTI")}>
+                mostra tutti
+              </span>
+            </div>
+          )}
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
@@ -314,31 +399,42 @@ export function News() {
                 background: "var(--bg-surface)",
                 border: `1px solid ${isToday ? "var(--accent)" : "var(--border)"}`,
                 borderRadius: "var(--radius-md)", overflow: "hidden",
-                boxShadow: isToday ? "0 0 12px rgba(61,214,140,0.08)" : "none",
+                boxShadow: isToday ? "0 0 14px rgba(61,214,140,0.09)" : "none",
               }}>
+                {/* Header giorno */}
                 <div style={{
-                  padding: "0.6rem 1rem",
+                  padding: "0.65rem 1.1rem",
                   background: isToday ? "rgba(61,214,140,0.08)" : "var(--bg-elevated)",
                   borderBottom: "1px solid var(--border)",
                   display: "flex", justifyContent: "space-between", alignItems: "center",
                 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                     {isToday && (
-                      <span style={{ fontSize: 10, fontWeight: 700, color: "var(--accent)", background: "var(--accent-dim)", padding: "2px 6px", borderRadius: 3, letterSpacing: "0.05em" }}>
+                      <span style={{
+                        fontSize: 10, fontWeight: 700, color: "var(--accent)",
+                        background: "var(--accent-dim)", padding: "2px 7px",
+                        borderRadius: 3, letterSpacing: "0.06em",
+                      }}>
                         OGGI
                       </span>
                     )}
-                    <span style={{ fontSize: 13, fontWeight: 600, color: isToday ? "var(--accent)" : "var(--text-primary)" }}>
+                    <span style={{ fontSize: 14, fontWeight: 600, color: isToday ? "var(--accent)" : "var(--text-primary)" }}>
                       {label}
                     </span>
                   </div>
-                  <span style={{ fontSize: 11, fontFamily: "var(--font-data)", background: "var(--danger-dim)", color: "var(--danger)", padding: "2px 8px", borderRadius: 4 }}>
+                  <span style={{
+                    fontSize: 12, fontFamily: "var(--font-data)",
+                    background: "var(--danger-dim)", color: "var(--danger)",
+                    padding: "3px 10px", borderRadius: 4, fontWeight: 600,
+                  }}>
                     {events.length} evento{events.length > 1 ? "i" : ""}
                   </span>
                 </div>
+
+                {/* Lista eventi */}
                 <div>
                   {events.map((event, i) => (
-                    <NewsCard key={i} event={event} isNext={weekOffset === 1} />
+                    <NewsCard key={`${event.date}-${event.currency}-${i}`} event={event} isNext={weekOffset === 1} />
                   ))}
                 </div>
               </div>
@@ -347,7 +443,10 @@ export function News() {
         </div>
       )}
 
-      <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+      <style>{`
+        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+      `}</style>
     </div>
   );
 }
