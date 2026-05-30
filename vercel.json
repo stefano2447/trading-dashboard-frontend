@@ -1,10 +1,5 @@
 {
-  "functions": {
-    "api/news.js": {
-      "runtime": "edge"
-    }
-  },
   "rewrites": [
-    { "source": "/api/news", "destination": "/api/news" }
+    { "source": "/api/(.*)", "destination": "/api/$1" }
   ]
 }

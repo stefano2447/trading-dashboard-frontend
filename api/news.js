@@ -1,15 +1,12 @@
-export const config = { runtime: "edge" };
-
-export default async function handler(req) {
-  const { searchParams } = new URL(req.url);
-  const week = searchParams.get("week") || "current";
+export default async function handler(req, res) {
+  const week = req.query.week || "current";
 
   const target = week === "next"
     ? "https://nfs.faireconomy.media/ff_calendar_nextweek.json"
     : "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
 
   try {
-    const res = await fetch(target, {
+    const response = await fetch(target, {
       headers: {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "application/json",
@@ -17,29 +14,15 @@ export default async function handler(req) {
       },
     });
 
-    if (!res.ok) {
-      const text = await res.text();
-      throw new Error(`HTTP ${res.status}: ${text.slice(0, 100)}`);
-    }
-
-    const data = await res.json();
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
     const high = Array.isArray(data) ? data.filter(e => e.impact === "High") : [];
 
-    return new Response(JSON.stringify({ events: high, total: high.length }), {
-      status: 200,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "s-maxage=1800",
-      },
-    });
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.setHeader("Cache-Control", "s-maxage=1800");
+    res.status(200).json({ events: high, total: high.length });
   } catch (e) {
-    return new Response(JSON.stringify({ error: e.message, events: [] }), {
-      status: 502,
-      headers: {
-        "Content-Type": "application/json",
-        "Access-Control-Allow-Origin": "*",
-      },
-    });
+    res.setHeader("Access-Control-Allow-Origin", "*");
+    res.status(502).json({ error: e.message, events: [] });
   }
 }
