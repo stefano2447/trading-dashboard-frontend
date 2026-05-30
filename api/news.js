@@ -1,9 +1,12 @@
 export default async function handler(req, res) {
   const week = req.query.week || "current";
 
-  const target = week === "next"
-    ? "https://nfs.faireconomy.media/ff_calendar_nextweek.json"
-    : "https://nfs.faireconomy.media/ff_calendar_thisweek.json";
+  const urls = {
+    current: "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    next:    "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+  };
+
+  const target = urls[week] || urls.current;
 
   try {
     const response = await fetch(target, {
@@ -14,15 +17,16 @@ export default async function handler(req, res) {
       },
     });
 
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const data = await response.json();
-    const high = Array.isArray(data) ? data.filter(e => e.impact === "High") : [];
+    // Restituisce info di debug
+    const text = await response.text();
+    res.status(200).json({
+      url: target,
+      status: response.status,
+      contentType: response.headers.get("content-type"),
+      bodyPreview: text.slice(0, 200),
+    });
 
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Cache-Control", "s-maxage=1800");
-    res.status(200).json({ events: high, total: high.length });
   } catch (e) {
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.status(502).json({ error: e.message, events: [] });
+    res.status(500).json({ error: e.message, url: target });
   }
 }
