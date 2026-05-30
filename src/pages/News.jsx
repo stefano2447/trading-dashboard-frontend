@@ -190,6 +190,7 @@ export function News() {
     try {
       const { events, not_available } = await doFetch(week);
       setNews(events);
+      console.log("Primo evento:", JSON.stringify(events[0]));
       setLastUpdate(new Date());
       if (not_available) {
         setError("Il calendario della prossima settimana non è ancora disponibile su Forex Factory. Riprova sabato sera.");
