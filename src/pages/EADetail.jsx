@@ -15,7 +15,7 @@ import { useEAConfigs } from "../hooks/useEAConfigs";
 function monthsActive(firstDate) {
   if (!firstDate) return 0;
   const start = new Date(firstDate);
-  const now = new Date();
+  const now   = new Date();
   return (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
 }
 
@@ -27,7 +27,15 @@ function fmtDate(iso) {
 function fmtProfit(val) {
   if (val === null || val === undefined) return "—";
   const n = Number(val);
+  if (isNaN(n)) return "—";
   return (n >= 0 ? "+" : "") + n.toFixed(2);
+}
+
+function fmt(val, dec = 2) {
+  if (val === null || val === undefined) return "—";
+  const n = Number(val);
+  if (isNaN(n)) return "—";
+  return n.toFixed(dec);
 }
 
 function isExpiringSoon(dateStr) {
@@ -37,35 +45,40 @@ function isExpiringSoon(dateStr) {
   const [dd, mm, yyyy] = parts.map(Number);
   if (!dd || !mm || !yyyy) return false;
   const target = new Date(yyyy, mm - 1, dd);
-  const diffMs = target - new Date();
-  return diffMs < 30 * 24 * 3600 * 1000;
+  return target - new Date() < 30 * 24 * 3600 * 1000;
 }
 
-// Normalizzazione per-trade
+function netProfit(t) {
+  return t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+}
+
+function normProfit(t) {
+  const raw  = netProfit(t);
+  const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
+  return raw * (0.01 / lots);
+}
+
+// ─── Calcoli ──────────────────────────────────────────────────────────────────
+
 function calcEquityCurve(trades, mode) {
   let equity = 0, peak = 0;
   return trades.map(t => {
-    const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
-    const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
-    const val  = mode === "norm" ? raw * (0.01 / lots) : raw;
+    const val = mode === "norm" ? normProfit(t) : netProfit(t);
     equity += val;
     if (equity > peak) peak = equity;
     const dd = Math.min(0, equity - peak);
     return {
-      date:      new Date(t.close_time).toLocaleDateString("it-IT"),
-      equity:    +equity.toFixed(2),
-      drawdown:  +dd.toFixed(2),
+      date:     new Date(t.close_time).toLocaleDateString("it-IT"),
+      equity:   +equity.toFixed(2),
+      drawdown: +dd.toFixed(2),
     };
   });
 }
 
-function calcMaxDD(trades, norm = true) {
+function calcMaxDD(trades) {
   let equity = 0, peak = 0, maxDD = 0;
   for (const t of trades) {
-    const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
-    const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
-    const val  = norm ? raw * (0.01 / lots) : raw;
-    equity += val;
+    equity += normProfit(t);
     if (equity > peak) peak = equity;
     const dd = peak - equity;
     if (dd > maxDD) maxDD = dd;
@@ -76,8 +89,7 @@ function calcMaxDD(trades, norm = true) {
 function calcMaxConsecLoss(trades) {
   let max = 0, cur = 0;
   for (const t of trades) {
-    const p = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
-    if (p < 0) { cur++; if (cur > max) max = cur; } else cur = 0;
+    if (netProfit(t) < 0) { cur++; if (cur > max) max = cur; } else cur = 0;
   }
   return max;
 }
@@ -89,12 +101,13 @@ const MONTHS = ["Gen","Feb","Mar","Apr","Mag","Giu","Lug","Ago","Set","Ott","Nov
 function calcHeatmap(trades) {
   const map = {};
   for (const t of trades) {
-    const dt = new Date(t.open_time);
-    const day = dt.getDay(), hour = dt.getHours();
+    const dt   = new Date(t.open_time);
+    const day  = dt.getDay();
+    const hour = dt.getHours();
     if (day === 0 || day === 6) continue;
     const key = `${day}_${hour}`;
     if (!map[key]) map[key] = { profit: 0, count: 0 };
-    map[key].profit += t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    map[key].profit += netProfit(t);
     map[key].count++;
   }
   return map;
@@ -104,7 +117,7 @@ function calcDayBar(trades) {
   const map = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0 };
   for (const t of trades) {
     const day = new Date(t.open_time).getDay();
-    if (day >= 1 && day <= 5) map[day] += t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    if (day >= 1 && day <= 5) map[day] += netProfit(t);
   }
   return DAYS.map((label, i) => ({ label, profit: +map[i + 1].toFixed(2) }));
 }
@@ -114,7 +127,7 @@ function calcHourBar(trades) {
   for (let h = 0; h < 24; h++) map[h] = 0;
   for (const t of trades) {
     const h = new Date(t.open_time).getHours();
-    map[h] += t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    map[h] += netProfit(t);
   }
   return HOURS.map(h => ({ label: `${h}h`, profit: +map[h].toFixed(2) }));
 }
@@ -124,10 +137,12 @@ function calcMonthBar(trades) {
   for (let m = 0; m < 12; m++) map[m] = 0;
   for (const t of trades) {
     const month = new Date(t.close_time).getMonth();
-    map[month] += t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+    map[month] += netProfit(t);
   }
   return MONTHS.map((label, i) => ({ label, profit: +map[i].toFixed(2) }));
 }
+
+// ─── Componenti UI ────────────────────────────────────────────────────────────
 
 function CustomTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
@@ -160,17 +175,13 @@ function SectionTitle({ children }) {
   );
 }
 
-// ─── Campo editabile ──────────────────────────────────────────────────────────
 function EditableField({ label, value, placeholder, onSave, monospace = false, warning = false }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft]     = useState(value);
 
   useEffect(() => { setDraft(value); }, [value]);
 
-  function save() {
-    onSave(draft.trim());
-    setEditing(false);
-  }
+  function save() { onSave(draft.trim()); setEditing(false); }
 
   if (editing) {
     return (
@@ -178,24 +189,14 @@ function EditableField({ label, value, placeholder, onSave, monospace = false, w
         <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 4 }}>{label}</div>
         <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
           <input
-            autoFocus
-            value={draft}
+            autoFocus value={draft}
             onChange={e => setDraft(e.target.value)}
             placeholder={placeholder}
             onKeyDown={e => { if (e.key === "Enter") save(); if (e.key === "Escape") setEditing(false); }}
-            style={{
-              flex: 1, background: "var(--bg-elevated)", border: "1px solid var(--accent)",
-              borderRadius: 4, color: "var(--text-primary)", padding: "4px 8px",
-              fontSize: 12, outline: "none",
-              fontFamily: monospace ? "var(--font-data)" : "var(--font-ui)",
-            }}
+            style={{ flex: 1, background: "var(--bg-elevated)", border: "1px solid var(--accent)", borderRadius: 4, color: "var(--text-primary)", padding: "4px 8px", fontSize: 12, outline: "none", fontFamily: monospace ? "var(--font-data)" : "inherit" }}
           />
-          <button onClick={save} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer" }}>
-            <Check size={14} />
-          </button>
-          <button onClick={() => setEditing(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
-            <X size={14} />
-          </button>
+          <button onClick={save} style={{ background: "none", border: "none", color: "var(--accent)", cursor: "pointer" }}><Check size={14} /></button>
+          <button onClick={() => setEditing(false)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}><X size={14} /></button>
         </div>
       </div>
     );
@@ -206,21 +207,11 @@ function EditableField({ label, value, placeholder, onSave, monospace = false, w
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
         <span style={{ color: "var(--text-muted)", fontSize: 12 }}>{label}</span>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-          {warning && value && (
-            <span style={{ fontSize: 10, color: "var(--danger)" }}>⚠ imminente</span>
-          )}
-          <span style={{
-            fontFamily: monospace ? "var(--font-data)" : "var(--font-ui)",
-            fontSize: 13, fontWeight: 500,
-            color: warning && value ? "var(--danger)" : value ? "var(--text-primary)" : "var(--text-muted)",
-            maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          }}>
+          {warning && value && <span style={{ fontSize: 10, color: "var(--danger)" }}>⚠ imminente</span>}
+          <span style={{ fontFamily: monospace ? "var(--font-data)" : "inherit", fontSize: 13, fontWeight: 500, color: warning && value ? "var(--danger)" : value ? "var(--text-primary)" : "var(--text-muted)", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {value || <span style={{ fontStyle: "italic", fontSize: 11 }}>non impostato</span>}
           </span>
-          <button
-            onClick={() => setEditing(true)}
-            style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 2 }}
-          >
+          <button onClick={() => setEditing(true)} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", padding: 2 }}>
             <Edit2 size={11} />
           </button>
         </div>
@@ -249,57 +240,50 @@ export function EADetail() {
     });
   }, [eaName]);
 
-const metrics = useMemo(() => {
-  if (!trades.length) return null;
+  const metrics = useMemo(() => {
+    if (!trades.length) return null;
 
-  // Normalizzazione per-trade
-  const profits_norm = trades.map(t => {
-    const raw  = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
-    const lots = t.lots && t.lots > 0 ? t.lots : 0.01;
-    return raw * (0.01 / lots);
-  });
-  const profits_raw = trades.map(t =>
-    t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0))
-  );
+    const profitsNorm = trades.map(normProfit);
+    const profitsRaw  = trades.map(netProfit);
 
-  const wins   = profits_norm.filter(p => p > 0);
-  const losses = profits_norm.filter(p => p < 0);
-  const total  = profits_norm.reduce((s, p) => s + p, 0);
-  const totalRaw = profits_raw.reduce((s, p) => s + p, 0);
+    const wins   = profitsNorm.filter(p => p > 0);
+    const losses = profitsNorm.filter(p => p < 0);
+    const total  = profitsNorm.reduce((s, p) => s + p, 0);
+    const totalRaw = profitsRaw.reduce((s, p) => s + p, 0);
 
-  const grossW  = wins.reduce((s, p) => s + p, 0);
-  const grossL  = Math.abs(losses.reduce((s, p) => s + p, 0));
-  const pf      = grossL > 0 ? grossW / grossL : null;
-  const avgWin  = wins.length   ? grossW / wins.length   : 0;
-  const avgLoss = losses.length ? grossL / losses.length : 0;
-  const winRate = profits_norm.length ? (wins.length / profits_norm.length) * 100 : 0;
-  const avgRR   = avgLoss > 0 ? avgWin / avgLoss : null;
-  const expectancy = profits_norm.length
-    ? (wins.length / profits_norm.length) * avgWin - (losses.length / profits_norm.length) * avgLoss
-    : 0;
+    const grossW = wins.reduce((s, p) => s + p, 0);
+    const grossL = Math.abs(losses.reduce((s, p) => s + p, 0));
+    const pf     = grossL > 0 ? grossW / grossL : null;
+    const avgWin  = wins.length   ? grossW / wins.length   : 0;
+    const avgLoss = losses.length ? grossL / losses.length : 0;
+    const winRate = profitsNorm.length ? (wins.length / profitsNorm.length) * 100 : 0;
+    const avgRR   = avgLoss > 0 ? avgWin / avgLoss : null;
+    const expectancy = profitsNorm.length
+      ? (wins.length / profitsNorm.length) * avgWin - (losses.length / profitsNorm.length) * avgLoss
+      : 0;
 
-  const maxDD    = calcMaxDD(trades, true);
-  const avgLots  = trades.reduce((s, t) => s + (t.lots || 0.01), 0) / trades.length;
-  const months   = monthsActive(trades[0]?.open_time);
-  const calmar   = months > 0 && maxDD > 0 ? (total * (12 / months)) / maxDD : null;
-  const retDD    = maxDD > 0 ? total / maxDD : null;
-  const maxCL    = calcMaxConsecLoss(trades);
+    const maxDD  = calcMaxDD(trades);
+    const avgLots = trades.reduce((s, t) => s + (t.lots || 0.01), 0) / trades.length;
+    const months  = monthsActive(trades[0]?.open_time);
+    const calmar  = months > 0 && maxDD > 0 ? (total * (12 / months)) / maxDD : null;
+    const retDD   = maxDD > 0 ? total / maxDD : null;
+    const maxCL   = calcMaxConsecLoss(trades);
 
-  return {
-    total, totalRaw, pf, winRate,
-    wins: wins.length, losses: losses.length,
-    avgWin, avgLoss, avgRR, expectancy,
-    maxDD, calmar, retDD, maxCL,
-    months, avgLots,
-    firstTrade: trades[0]?.open_time,
-    lastTrade:  trades[trades.length - 1]?.close_time,
-  };
-}, [trades]);
+    return {
+      total, totalRaw, pf, winRate,
+      wins: wins.length, losses: losses.length,
+      avgWin, avgLoss, avgRR, expectancy,
+      maxDD, calmar, retDD, maxCL,
+      months, avgLots,
+      firstTrade: trades[0]?.open_time,
+      lastTrade:  trades[trades.length - 1]?.close_time,
+    };
+  }, [trades]);
 
- const equityCurve = useMemo(() => {
-  if (!trades.length) return [];
-  return calcEquityCurve(trades, equityMode);
-}, [trades, equityMode]);
+  const equityCurve = useMemo(() => {
+    if (!trades.length) return [];
+    return calcEquityCurve(trades, equityMode);
+  }, [trades, equityMode]);
 
   const heatmap  = useMemo(() => calcHeatmap(trades),  [trades]);
   const dayBar   = useMemo(() => calcDayBar(trades),   [trades]);
@@ -316,9 +300,9 @@ const metrics = useMemo(() => {
     return "var(--bg-elevated)";
   }
 
-  const config  = eaName ? getConfig(eaName) : {};
-  const nextOpt = config.next_optimization || "";
-  const notes   = config.notes || "";
+  const config   = eaName ? getConfig(eaName) : {};
+  const nextOpt  = config.next_optimization || "";
+  const notes    = config.notes || "";
   const expiring = isExpiringSoon(nextOpt);
 
   if (!eaName) {
@@ -337,14 +321,7 @@ const metrics = useMemo(() => {
     <div>
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: "1rem", marginBottom: "1.5rem", flexWrap: "wrap" }}>
-        <button
-          onClick={() => navigate("/")}
-          style={{
-            background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
-            padding: "0.35rem 0.75rem", color: "var(--text-secondary)", cursor: "pointer",
-            display: "flex", alignItems: "center", gap: 6, fontSize: 13,
-          }}
-        >
+        <button onClick={() => navigate("/")} style={{ background: "none", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "0.35rem 0.75rem", color: "var(--text-secondary)", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
           <ArrowLeft size={14} /> Overview
         </button>
         <div>
@@ -362,39 +339,30 @@ const metrics = useMemo(() => {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
 
-          {/* ── Cards metriche top ── */}
+          {/* Cards metriche top */}
           <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
             {[
-              { label: "NET PROFIT (norm.)", value: fmtProfit(metrics.totalNorm),                      color: metrics.totalNorm >= 0 ? "var(--accent)" : "var(--danger)" },
-              { label: "PROFIT FACTOR",      value: metrics.pf ? metrics.pf.toFixed(2) : "—",          color: metrics.pf >= 1.5 ? "var(--accent)" : "var(--warning)" },
-              { label: "CALMAR RATIO",       value: metrics.calmar ? metrics.calmar.toFixed(2) : "—",  color: metrics.calmar >= 2 ? "var(--accent)" : "var(--warning)" },
-              { label: "RET/DD",             value: metrics.retDD ? metrics.retDD.toFixed(2) : "—",    color: metrics.retDD >= 2 ? "var(--accent)" : "var(--warning)" },
-              { label: "WIN RATE",           value: `${metrics.winRate.toFixed(1)}%`,                  color: metrics.winRate >= 55 ? "var(--accent)" : "var(--warning)" },
-              { label: "MAX DD (norm.)",     value: `-${metrics.maxDDNorm.toFixed(2)}`,                color: "var(--danger)" },
+              { label: "NET PROFIT (norm.)", value: fmtProfit(metrics.total),                         color: metrics.total    >= 0   ? "var(--accent)"  : "var(--danger)"  },
+              { label: "PROFIT FACTOR",      value: fmt(metrics.pf),                                  color: (metrics.pf||0)  >= 1.5 ? "var(--accent)"  : "var(--warning)" },
+              { label: "CALMAR RATIO",       value: fmt(metrics.calmar),                              color: (metrics.calmar||0) >= 2 ? "var(--accent)"  : "var(--warning)" },
+              { label: "RET/DD",             value: fmt(metrics.retDD),                               color: (metrics.retDD||0)  >= 2 ? "var(--accent)"  : "var(--warning)" },
+              { label: "WIN RATE",           value: `${fmt(metrics.winRate, 1)}%`,                    color: metrics.winRate  >= 55  ? "var(--accent)"  : "var(--warning)" },
+              { label: "MAX DD (norm.)",     value: metrics.maxDD > 0 ? `-${fmt(metrics.maxDD)}` : "—", color: "var(--danger)" },
             ].map(m => (
-              <div key={m.label} style={{
-                background: "var(--bg-surface)", border: "1px solid var(--border)",
-                borderRadius: "var(--radius-md)", padding: "0.9rem 1.1rem", flex: 1, minWidth: 130,
-              }}>
+              <div key={m.label} style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "0.9rem 1.1rem", flex: 1, minWidth: 130 }}>
                 <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", marginBottom: 5 }}>{m.label}</div>
                 <div style={{ fontSize: 20, fontWeight: 600, fontFamily: "var(--font-data)", color: m.color }}>{m.value}</div>
               </div>
             ))}
           </div>
 
-          {/* ── Equity curve ── */}
+          {/* Equity curve */}
           <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "1.25rem" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem" }}>
               <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em", color: "var(--text-muted)" }}>EQUITY CURVE</div>
               <div style={{ display: "flex", gap: 6 }}>
                 {["norm", "real"].map(mode => (
-                  <button key={mode} onClick={() => setEquityMode(mode)} style={{
-                    padding: "0.2rem 0.6rem", fontSize: 11, borderRadius: 4,
-                    border: "1px solid var(--border)",
-                    background: equityMode === mode ? "var(--accent-dim)" : "var(--bg-elevated)",
-                    color: equityMode === mode ? "var(--accent)" : "var(--text-muted)",
-                    cursor: "pointer",
-                  }}>
+                  <button key={mode} onClick={() => setEquityMode(mode)} style={{ padding: "0.2rem 0.6rem", fontSize: 11, borderRadius: 4, border: "1px solid var(--border)", background: equityMode === mode ? "var(--accent-dim)" : "var(--bg-elevated)", color: equityMode === mode ? "var(--accent)" : "var(--text-muted)", cursor: "pointer" }}>
                     {mode === "norm" ? "Normalizzata" : "Reale"}
                   </button>
                 ))}
@@ -438,56 +406,41 @@ const metrics = useMemo(() => {
             </div>
           </div>
 
-          {/* ── Metriche + Heatmap ── */}
+          {/* Metriche + Heatmap */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: "1rem" }}>
 
-            {/* Pannello sinistro: metriche + gestione */}
+            {/* Pannello sinistro */}
             <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-
-              {/* Metriche complete */}
               <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "1.25rem" }}>
                 <SectionTitle>METRICHE COMPLETE</SectionTitle>
                 <MetricRow label="Totale trade"       value={trades.length} />
                 <MetricRow label="Win / Loss"         value={`${metrics.wins} / ${metrics.losses}`} />
-                <MetricRow label="Win Rate"           value={`${metrics.winRate.toFixed(1)}%`}              color={metrics.winRate >= 55 ? "var(--accent)" : "var(--warning)"} />
-                <MetricRow label="Profit Factor"      value={metrics.pf ? metrics.pf.toFixed(2) : "—"}     color={metrics.pf >= 1.5 ? "var(--accent)" : "var(--warning)"} />
-                <MetricRow label="Net Profit (reale)" value={fmtProfit(metrics.total)}                      color={metrics.total >= 0 ? "var(--accent)" : "var(--danger)"} />
-                <MetricRow label="Net Profit (norm.)" value={fmtProfit(metrics.totalNorm)}                  color={metrics.totalNorm >= 0 ? "var(--accent)" : "var(--danger)"} />
-                <MetricRow label="Max DD (norm.)"     value={`-${metrics.maxDDNorm.toFixed(2)}`}            color="var(--danger)" />
-                <MetricRow label="Ret/DD"             value={metrics.retDD ? metrics.retDD.toFixed(2) : "—"} color={metrics.retDD >= 2 ? "var(--accent)" : "var(--warning)"} />
-                <MetricRow label="Calmar Ratio"       value={metrics.calmar ? metrics.calmar.toFixed(2) : "—"} color={metrics.calmar >= 2 ? "var(--accent)" : "var(--warning)"} />
-                <MetricRow label="Avg Win"            value={`+${metrics.avgWin.toFixed(2)}`}               color="var(--accent)" />
-                <MetricRow label="Avg Loss"           value={`-${metrics.avgLoss.toFixed(2)}`}              color="var(--danger)" />
-                <MetricRow label="Avg RR"             value={metrics.avgRR ? metrics.avgRR.toFixed(2) : "—"} />
-                <MetricRow label="Expectancy"         value={fmtProfit(metrics.expectancy)}                 color={metrics.expectancy >= 0 ? "var(--accent)" : "var(--danger)"} />
-                <MetricRow label="Max consec. loss"   value={metrics.maxCL}                                 color={metrics.maxCL >= 8 ? "var(--danger)" : "var(--text-primary)"} />
+                <MetricRow label="Win Rate"           value={`${fmt(metrics.winRate, 1)}%`}    color={metrics.winRate >= 55 ? "var(--accent)" : "var(--warning)"} />
+                <MetricRow label="Profit Factor"      value={fmt(metrics.pf)}                  color={(metrics.pf||0) >= 1.5 ? "var(--accent)" : "var(--warning)"} />
+                <MetricRow label="Net Profit (reale)" value={fmtProfit(metrics.totalRaw)}       color={metrics.totalRaw >= 0 ? "var(--accent)" : "var(--danger)"} />
+                <MetricRow label="Net Profit (norm.)" value={fmtProfit(metrics.total)}          color={metrics.total >= 0 ? "var(--accent)" : "var(--danger)"} />
+                <MetricRow label="Max DD (norm.)"     value={metrics.maxDD > 0 ? `-${fmt(metrics.maxDD)}` : "—"} color="var(--danger)" />
+                <MetricRow label="Ret/DD"             value={fmt(metrics.retDD)}               color={(metrics.retDD||0) >= 2 ? "var(--accent)" : "var(--warning)"} />
+                <MetricRow label="Calmar Ratio"       value={fmt(metrics.calmar)}              color={(metrics.calmar||0) >= 2 ? "var(--accent)" : "var(--warning)"} />
+                <MetricRow label="Avg Win"            value={`+${fmt(metrics.avgWin)}`}        color="var(--accent)" />
+                <MetricRow label="Avg Loss"           value={`-${fmt(metrics.avgLoss)}`}       color="var(--danger)" />
+                <MetricRow label="Avg RR"             value={fmt(metrics.avgRR)} />
+                <MetricRow label="Expectancy"         value={fmtProfit(metrics.expectancy)}    color={metrics.expectancy >= 0 ? "var(--accent)" : "var(--danger)"} />
+                <MetricRow label="Max consec. loss"   value={metrics.maxCL}                    color={metrics.maxCL >= 8 ? "var(--danger)" : "var(--text-primary)"} />
                 <MetricRow label="Primo trade"        value={fmtDate(metrics.firstTrade)} />
                 <MetricRow label="Ultimo trade"       value={fmtDate(metrics.lastTrade)} />
                 <MetricRow label="Mesi attivo"        value={metrics.months} />
-                <MetricRow label="Lotti medi"         value={metrics.avgLots.toFixed(2)} />
+                <MetricRow label="Lotti medi"         value={fmt(metrics.avgLots)} />
               </div>
 
-              {/* Gestione */}
               <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "1.25rem" }}>
                 <SectionTitle>GESTIONE</SectionTitle>
-                <EditableField
-                  label="Prossima ottimizzazione"
-                  value={nextOpt}
-                  placeholder="gg/mm/aaaa"
-                  monospace
-                  warning={expiring}
-                  onSave={val => updateConfig(eaName, { next_optimization: val })}
-                />
-                <EditableField
-                  label="Note"
-                  value={notes}
-                  placeholder="Aggiungi note sulla strategia..."
-                  onSave={val => updateConfig(eaName, { notes: val })}
-                />
+                <EditableField label="Prossima ottimizzazione" value={nextOpt} placeholder="gg/mm/aaaa" monospace warning={expiring} onSave={val => updateConfig(eaName, { next_optimization: val })} />
+                <EditableField label="Note" value={notes} placeholder="Aggiungi note sulla strategia..." onSave={val => updateConfig(eaName, { notes: val })} />
               </div>
             </div>
 
-            {/* Pannello destro: grafici temporali */}
+            {/* Pannello destro */}
             <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "1.25rem" }}>
 
               <SectionTitle>HEATMAP GIORNO × ORA</SectionTitle>
@@ -513,12 +466,7 @@ const metrics = useMemo(() => {
                           return (
                             <td key={h}
                               title={cell ? `${day} ${h}h: ${cell.profit >= 0 ? "+" : ""}${cell.profit.toFixed(2)} (${cell.count} trade)` : "Nessun trade"}
-                              style={{
-                                width: 20, height: 18,
-                                background: cell ? heatColor(cell.profit) : "var(--bg-elevated)",
-                                border: "1px solid var(--bg-base)", borderRadius: 2,
-                                cursor: cell ? "help" : "default",
-                              }}
+                              style={{ width: 20, height: 18, background: cell ? heatColor(cell.profit) : "var(--bg-elevated)", border: "1px solid var(--bg-base)", borderRadius: 2, cursor: cell ? "help" : "default" }}
                             />
                           );
                         })}
@@ -581,7 +529,7 @@ const metrics = useMemo(() => {
             </div>
           </div>
 
-          {/* ── Lista trade ── */}
+          {/* Lista trade */}
           <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "1.25rem" }}>
             <SectionTitle>LISTA TRADE ({trades.length})</SectionTitle>
             <div style={{ overflowX: "auto" }}>
@@ -589,11 +537,7 @@ const metrics = useMemo(() => {
                 <thead>
                   <tr style={{ borderBottom: "1px solid var(--border)" }}>
                     {["#", "Apertura", "Chiusura", "Dir.", "Lotti", "Open", "Close", "Profit", "Comm.", "Net"].map(h => (
-                      <th key={h} style={{
-                        padding: "0.5rem 0.75rem",
-                        textAlign: ["#", "Dir."].includes(h) ? "left" : "right",
-                        color: "var(--text-muted)", fontSize: 11, fontWeight: 500,
-                      }}>
+                      <th key={h} style={{ padding: "0.5rem 0.75rem", textAlign: ["#", "Dir."].includes(h) ? "left" : "right", color: "var(--text-muted)", fontSize: 11, fontWeight: 500 }}>
                         {h}
                       </th>
                     ))}
@@ -601,10 +545,9 @@ const metrics = useMemo(() => {
                 </thead>
                 <tbody>
                   {trades.map((t, i) => {
-                    const net = t.net_profit ?? (t.profit + (t.commission || 0) + (t.swap || 0));
+                    const net = netProfit(t);
                     return (
-                      <tr key={t.ticket}
-                        style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s" }}
+                      <tr key={t.ticket || i} style={{ borderBottom: "1px solid var(--border)", transition: "background 0.1s" }}
                         onMouseEnter={e => e.currentTarget.style.background = "var(--bg-hover)"}
                         onMouseLeave={e => e.currentTarget.style.background = "transparent"}
                       >
@@ -617,8 +560,8 @@ const metrics = useMemo(() => {
                         <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)", fontSize: 11 }}>{t.lots}</td>
                         <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)", fontSize: 11, color: "var(--text-secondary)" }}>{t.open_price}</td>
                         <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)", fontSize: 11, color: "var(--text-secondary)" }}>{t.close_price}</td>
-                        <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)", fontSize: 11, color: t.profit >= 0 ? "var(--accent)" : "var(--danger)" }}>{fmtProfit(t.profit)}</td>
-                        <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)", fontSize: 11, color: "var(--text-muted)" }}>{t.commission?.toFixed(2) ?? "—"}</td>
+                        <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)", fontSize: 11, color: (t.profit||0) >= 0 ? "var(--accent)" : "var(--danger)" }}>{fmtProfit(t.profit)}</td>
+                        <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)", fontSize: 11, color: "var(--text-muted)" }}>{t.commission != null ? fmt(t.commission) : "—"}</td>
                         <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)", fontSize: 11, fontWeight: 600, color: net >= 0 ? "var(--accent)" : "var(--danger)" }}>{fmtProfit(net)}</td>
                       </tr>
                     );
