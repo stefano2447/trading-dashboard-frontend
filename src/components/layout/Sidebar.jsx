@@ -1,13 +1,14 @@
 import { NavLink } from "react-router-dom";
-import { BarChart2, Search, GitBranch, Briefcase, Radio, Newspaper } from "lucide-react";
+import { BarChart2, Search, GitBranch, Briefcase, Radio, Newspaper, Shield } from "lucide-react";
 
 const navItems = [
-  { path: "/",             icon: BarChart2,  label: "EA Overview"  },
-  { path: "/analisi",      icon: Search,     label: "Analisi EA"   },
-  { path: "/correlazioni", icon: GitBranch,  label: "Correlazioni" },
-  { path: "/portafogli",   icon: Briefcase,  label: "Portafogli"   },
-  { path: "/conti",        icon: Radio,      label: "Conti Live"   },
-  { path: "/news",         icon: Newspaper,  label: "News"         },
+  { path: "/",             icon: BarChart2,  label: "EA Overview"    },
+  { path: "/analisi",      icon: Search,     label: "Analisi EA"     },
+  { path: "/correlazioni", icon: GitBranch,  label: "Correlazioni"   },
+  { path: "/portafogli",   icon: Briefcase,  label: "Portafogli"     },
+  { path: "/conti",        icon: Radio,      label: "Conti Live"     },
+  { path: "/news",         icon: Newspaper,  label: "News"           },
+  { path: "/propfirm",     icon: Shield,     label: "Prop Firm Rules"},
 ];
 
 export function Sidebar() {
