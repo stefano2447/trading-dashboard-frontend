@@ -328,7 +328,19 @@ function LotScenarioTable({ portfolio, eaPool }) {
                 </td>
                 <td style={{ padding: "0.35rem 0.4rem", textAlign: "right",
                              fontFamily: "var(--font-data)", color: "var(--accent)", fontWeight: 600 }}>
-                  {lots != null ? lots.toFixed(4) : "—"}
+                  {(() => {
+                    if (lots == null) return "—";
+                    // breakdown può essere un numero (vecchio formato) o un oggetto (nuovo formato)
+                    if (typeof lots === "number") return lots.toFixed(4);
+                    if (lots.lots != null) return lots.lots.toFixed(4);
+                    // sqx_fixed_money: mostra il parametro mmRiskedMoney
+                    return (
+                      <span title={lots.note || lots.param_name} style={{ cursor: "help", fontSize: 11 }}>
+                        {lots.param_value != null ? `$${Number(lots.param_value).toFixed(0)}` : "—"}
+                        <span style={{ fontSize: 9, color: "var(--text-muted)", marginLeft: 3 }}>MM</span>
+                      </span>
+                    );
+                  })()}
                 </td>
                 <td style={{ padding: "0.35rem 0.4rem", textAlign: "right", fontFamily: "var(--font-data)",
                              color: ea?.win_rate >= 55 ? "var(--accent)" : "var(--text-secondary)" }}>
@@ -349,17 +361,24 @@ function LotScenarioTable({ portfolio, eaPool }) {
             </td>
             <td style={{ padding: "0.35rem 0.4rem", textAlign: "right",
                          fontFamily: "var(--font-data)", fontWeight: 700, color: "var(--accent)" }}>
-              {fmt(sc.total_lots, 4)}
+              {sc.total_lots > 0 ? fmt(sc.total_lots, 4) : "—"}
             </td>
             <td colSpan={2} />
           </tr>
         </tbody>
       </table>
 
-      {sc.breakdown && Object.values(sc.breakdown).some((_, i, arr) =>
-        eaPool?.[portfolio.ea_list[i]]?.defaultprice > 0) && (
+      {sc.breakdown && portfolio.ea_list.some(n => eaPool?.[n]?.defaultprice > 0) && (
         <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.4rem" }}>
           ⓘ I lotti con @prezzo sono calcolati al defaultprice dell'EA — scalati automaticamente al prezzo attuale di mercato.
+        </div>
+      )}
+      {sc.breakdown && portfolio.ea_list.some(n => {
+        const b = sc.breakdown[n];
+        return b && (b.sizing_type === "sqx_fixed_money" || (typeof b === "object" && b.lots == null));
+      }) && (
+        <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.25rem" }}>
+          ⓘ MM = valore consigliato per mmRiskedMoney (EA SQX con rischio fisso in denaro).
         </div>
       )}
     </div>

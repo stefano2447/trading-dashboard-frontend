@@ -2,4 +2,10 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" }
   ]
+"rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
+    }
+  ]
 }
