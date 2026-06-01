@@ -99,13 +99,16 @@ const COLUMN_GROUPS = [
     { key: "_next_opt",             label: "Pross. Ottim.", numeric: false },
     { key: "_notes",                label: "Note",          numeric: false },
   ]},
+  { label: "HEALTH", columns: [
+  { key: "_health", label: "Health Score", numeric: false },
+]},
   { label: "AZIONI", columns: [
   { key: "_actions", label: "", numeric: false },
 ]},
 ];
 
 const ALL_COLUMNS = COLUMN_GROUPS.flatMap(g => g.columns);
-const GESTIONE_KEYS = ["_next_opt", "_notes", "_actions"];
+const GESTIONE_KEYS = ["_next_opt", "_notes", "_actions", "_health"];
 
 function SortIcon({ column, sortKey, sortDir }) {
   if (sortKey !== column) return <ArrowUpDown size={11} style={{ opacity: 0.25 }} />;
@@ -291,6 +294,60 @@ export function EAOverview() {
           </div>
         );
       }
+      case "_health": {
+  const score  = ea.health_score;
+  const status = ea.health_status;
+  const details = ea.health_details || {};
+
+  // Nessun dato sufficiente
+  if (score === null || score === undefined) {
+    const label =
+      status === "insufficient_recent"
+        ? `⚪ < 10 trade recenti (${details.recent_trades || 0})`
+        : status === "insufficient_data"
+        ? "⚪ Dati insufficienti"
+        : "⚪ —";
+    return (
+      <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
+        {label}
+      </span>
+    );
+  }
+
+  const emoji = status === "stable"   ? "🟢"
+              : status === "warning"  ? "🟡"
+              : status === "degraded" ? "🔴"
+              : "⚪";
+
+  const color = status === "stable"   ? "var(--accent)"
+              : status === "warning"  ? "var(--warning)"
+              : status === "degraded" ? "var(--danger)"
+              : "var(--text-muted)";
+
+  const label = status === "stable"   ? "Stabile"
+              : status === "warning"  ? "Attenzione"
+              : status === "degraded" ? "Degradazione"
+              : "—";
+
+  const tooltip = details.recent_pf != null
+    ? `PF: ${details.historic_pf} → ${details.recent_pf} | WR: ${details.historic_wr}% → ${details.recent_wr}% | ${details.recent_trades} trade recenti`
+    : "";
+
+  return (
+    <div
+      title={tooltip}
+      style={{ display: "flex", alignItems: "center", gap: 6, cursor: tooltip ? "help" : "default" }}
+    >
+      <span style={{ fontSize: 13 }}>{emoji}</span>
+      <span style={{
+        fontFamily: "var(--font-data)", fontSize: 12, fontWeight: 600, color,
+      }}>
+        {score}
+      </span>
+      <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</span>
+    </div>
+  );
+}
 
       case "_notes": {
         const config    = getConfig(ea.ea_name);
