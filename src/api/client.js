@@ -146,4 +146,19 @@ export const api = {
       body: JSON.stringify({ ea_name: eaName, ...fields }),
     });
   },
+
+
+  getBacktestData: async () => {
+    if (USE_MOCK) return { status: "no_data", ea_pool: {}, portfolio_collections: {} };
+    const data = await request("/api/backtest/data");
+    return data;
+  },
+
+  simulateChallenge: async (params) => {
+    if (USE_MOCK) return { results: [], optimal_risk_pct: null, trade_count: 0, n_simulations: 0 };
+    return request("/api/backtest/simulate", {
+      method: "POST",
+      body: JSON.stringify(params),
+    });
+  },
 };
