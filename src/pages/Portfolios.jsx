@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { api } from "../services/client";
+import { api } from "../api/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
