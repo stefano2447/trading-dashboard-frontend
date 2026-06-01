@@ -1,5 +1,5 @@
-import { useState, useEffect } from "react";
-import { api } from "../api/client";
+import { useState, useEffect, useRef } from "react";
+import { api } from "../services/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -148,7 +148,9 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                         {p.name.replace("Portfolio ", "P")}
                       </span>
                       {hasWarning && (
-                        <AlertTriangle size={12} color="var(--warning)" title="Contiene EA con R:R < 1" />
+                        <span title="⚠ Contiene EA con R:R medio < 1: un singolo stop loss può essere una perdita giornaliera significativa. Verifica compatibilità con il daily DD limit della prop firm.">
+                          <AlertTriangle size={12} color="var(--warning)" style={{ cursor: "help" }} />
+                        </span>
                       )}
                     </div>
                   </td>
@@ -437,6 +439,17 @@ export function Portfolios() {
   const [error,       setError]       = useState(null);
   const [activeTab,   setActiveTab]   = useState(null);
   const [selected,    setSelected]    = useState(null);
+  const detailRef = useRef(null);
+
+  function handleSelect(portfolio) {
+    setSelected(portfolio);
+    // Scrolla al pannello dettaglio dopo il render
+    if (portfolio) {
+      setTimeout(() => {
+        detailRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      }, 50);
+    }
+  }
 
   useEffect(() => {
     setLoading(true);
@@ -515,7 +528,7 @@ export function Portfolios() {
           <PortfolioTable
             portfolios={activePortfolios}
             eaPool={eaPool}
-            onSelect={setSelected}
+            onSelect={handleSelect}
             selected={selected}
           />
         </Card>
@@ -523,11 +536,13 @@ export function Portfolios() {
 
       {/* Pannello dettaglio */}
       {selected && (
-        <PortfolioDetail
-          portfolio={selected}
-          eaPool={eaPool}
-          overlapMatrix={overlapMatrix}
-        />
+        <div ref={detailRef} style={{ scrollMarginTop: "1.5rem" }}>
+          <PortfolioDetail
+            portfolio={selected}
+            eaPool={eaPool}
+            overlapMatrix={overlapMatrix}
+          />
+        </div>
       )}
     </div>
   );
