@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Edit2, Check, X, ChevronDown, ChevronUp,
          Play, TrendingUp, AlertTriangle, Target } from "lucide-react";
-import { api } from "../api/client";
+import { api } from "../services/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -274,8 +274,10 @@ function ChallengeSimulator({ firms }) {
   const [nSim,      setNSim]      = useState(3000);
 
   const [running,  setRunning]  = useState(false);
+  const [progress, setProgress] = useState(0);
   const [results,  setResults]  = useState(null);
   const [simError, setSimError] = useState(null);
+  const workerRef = useRef(null);
 
   useEffect(() => {
     api.getBacktestData()
@@ -295,13 +297,116 @@ function ChallengeSimulator({ firms }) {
     setMinDays(challenge.params.min_trading_days || 0);
   }
 
-  async function runSimulation() {
+  function buildDailyPnlDollar() {
+    // Costruisce daily_pnl in $ assoluti e ea_components dal btData
+    // direttamente nel browser — nessuna chiamata al server
+    const eaPool = btData?.ea_pool || {};
+
+    if (selType === "ea") {
+      const ea = eaPool[selId];
+      if (!ea?.daily_pnl_pct) return null;
+      const initial = ea.initial_capital || 100000;
+      const dailyDollar = ea.daily_pnl_pct.map(p => p / 100.0 * initial);
+      const components  = [{
+        ea_name:          selId,
+        initial_capital:  initial,
+        base_lots:        ea.base_lots || 0.01,
+        lot_sizing_type:  ea.lot_sizing_type || "fixed_lots",
+        defaultprice:     ea.defaultprice || 0,
+        mm_risked_money:  ea.mm_risked_money || 0,
+        ref_price:        ea.ref_price || 0,
+        ref_lots:         ea.ref_lots || ea.base_lots || 0.01,
+        daily_pnl_dollar: dailyDollar,
+      }];
+      return { dailyDollar, components };
+    }
+
+    // Portfolio
+    const collection = btData?.portfolio_collections?.[selColl] || [];
+    const portfolio  = collection[parseInt(selId)];
+    if (!portfolio) return null;
+
+    const allSeries  = [];
+    const components = [];
+
+    for (const eaName of portfolio.ea_list) {
+      const ea = eaPool[eaName];
+      if (!ea?.daily_pnl_pct) continue;
+      const initial     = ea.initial_capital || 100000;
+      const dailyDollar = ea.daily_pnl_pct.map(p => p / 100.0 * initial);
+      components.push({
+        ea_name:          eaName,
+        initial_capital:  initial,
+        base_lots:        ea.base_lots || 0.01,
+        lot_sizing_type:  ea.lot_sizing_type || "fixed_lots",
+        defaultprice:     ea.defaultprice || 0,
+        mm_risked_money:  ea.mm_risked_money || 0,
+        ref_price:        ea.ref_price || 0,
+        ref_lots:         ea.ref_lots || ea.base_lots || 0.01,
+        daily_pnl_dollar: dailyDollar,
+      });
+      allSeries.push(dailyDollar);
+    }
+
+    if (!allSeries.length) return null;
+
+    const minLen    = Math.min(...allSeries.map(s => s.length));
+    const combined  = new Array(minLen).fill(0);
+    for (const s of allSeries)
+      for (let i = 0; i < minLen; i++)
+        combined[i] += s[s.length - minLen + i];
+
+    // Tronca anche i daily_pnl_dollar dei components
+    for (const c of components)
+      c.daily_pnl_dollar = c.daily_pnl_dollar.slice(-minLen);
+
+    return { dailyDollar: combined, components };
+  }
+
+  function runSimulation() {
+    const built = buildDailyPnlDollar();
+    if (!built) {
+      setSimError("Dati non disponibili. Rigenera il JSON con analyzer.py.");
+      return;
+    }
+
+    // Termina worker precedente se ancora in esecuzione
+    if (workerRef.current) workerRef.current.terminate();
+
     setRunning(true);
+    setProgress(0);
     setSimError(null);
     setResults(null);
-    try {
-      const finalId = selType === "portfolio" ? `${selColl}||rank_${selId}` : selId;
-      const res = await api.simulateChallenge({
+
+    const worker = new Worker(
+      new URL("/monteCarloWorker.js", import.meta.url),
+      { type: "classic" }
+    );
+    workerRef.current = worker;
+
+    worker.onmessage = (e) => {
+      if (e.data.type === "progress") {
+        setProgress(e.data.pct);
+      } else if (e.data.type === "result") {
+        setResults(e.data.data);
+        setRunning(false);
+        setProgress(100);
+        worker.terminate();
+        workerRef.current = null;
+      }
+    };
+
+    worker.onerror = (err) => {
+      setSimError(err.message || "Errore nel Worker");
+      setRunning(false);
+      worker.terminate();
+      workerRef.current = null;
+    };
+
+    worker.postMessage({
+      daily_pnl_dollar: built.dailyDollar,
+      ea_components:    built.components,
+      params: {
         capital,
         profit_target_p1: target1,
         profit_target_p2: is1phase ? null : target2,
@@ -309,19 +414,12 @@ function ChallengeSimulator({ firms }) {
         max_dd_pct:       maxDD,
         time_limit_days:  timeLimit,
         min_trading_days: minDays,
-        selection_type:   selType,
-        selection_id:     finalId,
         risk_min_pct:     riskMin,
         risk_max_pct:     riskMax,
         risk_step_pct:    riskStep,
         n_simulations:    nSim,
-      });
-      setResults(res);
-    } catch (e) {
-      setSimError(e.message || "Errore simulazione");
-    } finally {
-      setRunning(false);
-    }
+      },
+    });
   }
 
   const eaNames   = Object.keys(btData?.ea_pool || {});
@@ -533,16 +631,22 @@ function ChallengeSimulator({ firms }) {
                          borderRadius: "var(--radius-md)", cursor: running || !selId ? "default" : "pointer",
                          display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                 {running ? (
-                  <>
-                    <div style={{ width: 14, height: 14, border: "2px solid var(--border)",
+                  <><div style={{ width: 14, height: 14, border: "2px solid var(--border)",
                                   borderTop: "2px solid var(--accent)", borderRadius: "50%",
                                   animation: "spin 0.8s linear infinite" }} />
-                    Simulazione in corso…
-                  </>
+                    Simulazione… {progress}%</>
                 ) : (
-                  <><Play size={14} /> Avvia Monte Carlo</>
+                  <><Play size={14} /> Avvia Monte Carlo (locale)</>
                 )}
               </button>
+              {running && (
+                <div style={{ marginTop: "0.4rem", height: 4, background: "var(--bg-elevated)",
+                              borderRadius: 2, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${progress}%`,
+                                background: "var(--accent)", transition: "width 0.3s",
+                                borderRadius: 2 }} />
+                </div>
+              )}
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
 
               {simError && (
