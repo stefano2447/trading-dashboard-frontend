@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Edit2, Check, X, ChevronDown, ChevronUp,
          Play, TrendingUp, AlertTriangle, Target } from "lucide-react";
-import { api } from "../api/client";
+import { api } from "../services/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -694,8 +694,73 @@ function ChallengeSimulator({ firms }) {
                   </Card>
                 </div>
 
+                {/* Lotti consigliati per il rischio ottimale */}
+                {results.lot_recommendations && results.lot_recommendations.length > 0 && (
+                  <Card>
+                    <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em",
+                                  color: "var(--text-muted)", marginBottom: "0.75rem" }}>
+                      PARAMETRI DA IMPOSTARE @ RISCHIO OTTIMALE ({results.optimal_risk_pct}%)
+                    </div>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                      <thead>
+                        <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                          {["EA", "PARAMETRO", "VALORE", "LOSS MEDIA/GG", "LOSS MAX/GG"].map(h => (
+                            <th key={h} style={{ padding: "0.35rem 0.5rem", textAlign: h === "EA" ? "left" : "right",
+                                               fontSize: 10, fontWeight: 600, color: "var(--text-muted)" }}>
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {results.lot_recommendations.map(rec => (
+                          <tr key={rec.ea_name} style={{ borderBottom: "1px solid var(--border)" }}>
+                            <td style={{ padding: "0.35rem 0.5rem", color: "var(--text-primary)", fontWeight: 500 }}>
+                              {rec.ea_name}
+                            </td>
+                            <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
+                                         color: "var(--text-muted)", fontSize: 11 }}>
+                              {rec.param_name}
+                            </td>
+                            <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
+                                         fontFamily: "var(--font-data)", fontWeight: 700,
+                                         color: "var(--accent)" }}>
+                              {rec.sizing_type === "sqx_fixed_money"
+                                ? `$${Number(rec.param_value).toFixed(0)}`
+                                : Number(rec.param_value).toFixed(4)}
+                              {rec.note && (
+                                <span title={rec.note}
+                                  style={{ marginLeft: 4, fontSize: 10,
+                                           color: "var(--text-muted)", cursor: "help" }}>ⓘ</span>
+                              )}
+                            </td>
+                            <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
+                                         fontFamily: "var(--font-data)", color: "var(--warning)" }}>
+                              {rec.expected_avg_daily_loss_dollar != null
+                                ? `-$${rec.expected_avg_daily_loss_dollar.toFixed(0)}`
+                                : "—"}
+                            </td>
+                            <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
+                                         fontFamily: "var(--font-data)", color: "var(--danger)" }}>
+                              {rec.expected_max_daily_loss_dollar != null
+                                ? `-$${rec.expected_max_daily_loss_dollar.toFixed(0)}`
+                                : "—"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                      Fattore di scala: {results.lot_recommendations[0]?.scale_factor?.toFixed(4)} ·
+                      Stesso fattore per tutti gli EA (tutti calibrati allo stesso MaxDD in $)
+                    </div>
+                  </Card>
+                )}
+
                 <div style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                  {results.n_simulations.toLocaleString()} simulazioni su {results.trade_count} trade storici ·
+                  {results.n_simulations.toLocaleString()} simulazioni ·
+                  {results.n_trading_days} giorni con trade su {results.n_calendar_days} totali
+                  ({results.avg_trades_freq}% frequenza) ·
                   Rischio ottimale = max P(successo) / √(giorni medi)
                 </div>
               </div>
