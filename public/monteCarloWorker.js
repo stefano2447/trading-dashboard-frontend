@@ -74,7 +74,23 @@ function runForRiskLevel(dailyPnlDollar, params, riskPct, rand) {
 
   const avgDailyLoss    = Math.abs(losses.reduce((a,b) => a+b, 0) / losses.length);
   const riskTargetDollar = params.capital * riskPct / 100.0;
-  const scaleFactor      = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
+  let scaleFactor        = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
+
+  // Cap per singola operazione
+  const maxRiskPerTrade = params.max_risk_per_trade_pct || 2.0;
+  // Trova la perdita max per singolo trade in $ (dal pool giornaliero)
+  // Approssimazione: usiamo il minimo giornaliero come proxy del trade peggiore
+  const worstDay = Math.abs(Math.min(...dailyPnlDollar.filter(x => x < 0)));
+  let tradeCapped = false;
+  let effectiveRiskPct = riskPct;
+  if (worstDay > 0) {
+    const scaleCapTrade = (params.capital * maxRiskPerTrade / 100.0) / worstDay;
+    if (scaleFactor > scaleCapTrade) {
+      scaleFactor    = scaleCapTrade;
+      tradeCapped    = true;
+      effectiveRiskPct = Math.round(avgDailyLoss * scaleFactor / params.capital * 100 * 1000) / 1000;
+    }
+  }
 
   const scaledArr = dailyPnlDollar.map(x => x * scaleFactor);
 
@@ -134,6 +150,8 @@ function runForRiskLevel(dailyPnlDollar, params, riskPct, rand) {
 
   return {
     risk_pct:            riskPct,
+    effective_risk_pct:  Math.round(effectiveRiskPct * 1000) / 1000,
+    trade_capped:        tradeCapped,
     scale_factor:        Math.round(scaleFactor * 10000) / 10000,
     p_success:           Math.round(pSuccess * 10000) / 10000,
     p_daily_breach:      Math.round(pDaily   * 10000) / 10000,
@@ -158,26 +176,33 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
   const riskTargetDollar = capital * optimalRisk / 100.0;
   const scaleFactor      = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
 
+  // Cap per singola operazione sui lotti
+  const maxRiskPct  = capital * (params.max_risk_per_trade_pct || 2.0) / 100.0;
+  const worstSingle = Math.abs(Math.min(...dailyPnlDollar.filter(x => x < 0)));
+  const sfCap       = worstSingle > 0 ? maxRiskPct / worstSingle : scaleFactor;
+  const sfFinal     = Math.min(scaleFactor, sfCap);
+  const lotCapped   = sfFinal < scaleFactor;
+
   return eaComponents.map(comp => {
     const sizing = comp.lot_sizing_type || "fixed_lots";
     let paramName, paramValue, note;
 
     if (sizing === "price_scaling_explicit") {
       paramName  = "base_lots";
-      paramValue = Math.round(comp.base_lots * scaleFactor * 10000) / 10000;
+      paramValue = Math.round(comp.base_lots * sfFinal * 10000) / 10000;
       note       = `valido @ prezzo ${comp.defaultprice}; l'EA scala automaticamente`;
     } else if (sizing === "price_scaling_implicit") {
       paramName  = "LotSize";
-      paramValue = Math.round(comp.ref_lots * scaleFactor * 10000) / 10000;
+      paramValue = Math.round(comp.ref_lots * sfFinal * 10000) / 10000;
       note       = `valido @ prezzo ${comp.ref_price}; l'EA scala col prezzo`;
     } else if (sizing === "sqx_fixed_money") {
       paramName  = "mmRiskedMoney";
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
-      paramValue = Math.round(mmBase * scaleFactor * 100) / 100;
+      paramValue = Math.round(mmBase * sfFinal * 100) / 100;
       note       = `da ${Math.round(mmBase)}$ → ${Math.round(paramValue)}$`;
     } else {
       paramName  = "Lots";
-      paramValue = Math.round(comp.base_lots * scaleFactor * 10000) / 10000;
+      paramValue = Math.round(comp.base_lots * sfFinal * 10000) / 10000;
       note       = "lotti fissi";
     }
 
@@ -197,7 +222,8 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       param_name:   paramName,
       param_value:  paramValue,
       note,
-      scale_factor: Math.round(scaleFactor * 10000) / 10000,
+      trade_capped: lotCapped,
+      scale_factor: Math.round(sfFinal * 10000) / 10000,
       expected_avg_daily_loss_dollar: avgEALoss ? Math.round(avgEALoss) : null,
       expected_max_daily_loss_dollar: maxEALoss ? Math.round(maxEALoss) : null,
     };

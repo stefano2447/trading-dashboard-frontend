@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Edit2, Check, X, ChevronDown, ChevronUp,
          Play, TrendingUp, AlertTriangle, Target } from "lucide-react";
-import { api } from "../api/client";
+import { api } from "../services/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -268,10 +268,11 @@ function ChallengeSimulator({ firms }) {
   const [timeLimit, setTimeLimit] = useState(60);
   const [minDays,   setMinDays]   = useState(10);
 
-  const [riskMin,   setRiskMin]   = useState(0.5);
-  const [riskMax,   setRiskMax]   = useState(3.0);
-  const [riskStep,  setRiskStep]  = useState(0.25);
-  const [nSim,      setNSim]      = useState(3000);
+  const [riskMin,        setRiskMin]        = useState(0.5);
+  const [riskMax,        setRiskMax]        = useState(3.0);
+  const [riskStep,       setRiskStep]       = useState(0.25);
+  const [nSim,           setNSim]           = useState(3000);
+  const [maxRiskPerTrade, setMaxRiskPerTrade] = useState(2.0);
 
   const [running,  setRunning]  = useState(false);
   const [progress, setProgress] = useState(0);
@@ -408,16 +409,17 @@ function ChallengeSimulator({ firms }) {
       ea_components:    built.components,
       params: {
         capital,
-        profit_target_p1: target1,
-        profit_target_p2: is1phase ? null : target2,
-        daily_dd_pct:     dailyDD,
-        max_dd_pct:       maxDD,
-        time_limit_days:  timeLimit,
-        min_trading_days: minDays,
-        risk_min_pct:     riskMin,
-        risk_max_pct:     riskMax,
-        risk_step_pct:    riskStep,
-        n_simulations:    nSim,
+        profit_target_p1:     target1,
+        profit_target_p2:     is1phase ? null : target2,
+        daily_dd_pct:         dailyDD,
+        max_dd_pct:           maxDD,
+        time_limit_days:      timeLimit,
+        min_trading_days:     minDays,
+        risk_min_pct:         riskMin,
+        risk_max_pct:         riskMax,
+        risk_step_pct:        riskStep,
+        n_simulations:        nSim,
+        max_risk_per_trade_pct: maxRiskPerTrade,
       },
     });
   }
@@ -607,7 +609,8 @@ function ChallengeSimulator({ firms }) {
                 { label: "Rischio min (%)", val: riskMin,  set: setRiskMin },
                 { label: "Rischio max (%)", val: riskMax,  set: setRiskMax },
                 { label: "Step (%)",        val: riskStep, set: setRiskStep },
-                { label: "Simulazioni",     val: nSim,     set: setNSim },
+                { label: "Simulazioni",         val: nSim,           set: setNSim },
+                { label: "Max rischio/trade (%)", val: maxRiskPerTrade, set: setMaxRiskPerTrade },
               ].map(({ label, val, set }) => (
                 <div key={label} style={{ display: "flex", justifyContent: "space-between",
                                           alignItems: "center", marginBottom: "0.5rem" }}>
@@ -725,6 +728,12 @@ function ChallengeSimulator({ firms }) {
                                            fontFamily: "var(--font-data)", fontWeight: isOpt ? 700 : 400,
                                            color: isOpt ? "var(--accent)" : "var(--text-primary)" }}>
                                 {r.risk_pct}%
+                                {r.trade_capped && (
+                                  <span title={`Rischio effettivo: ${r.effective_risk_pct}% (ridotto dal cap ${maxRiskPerTrade}% per trade)`}
+                                    style={{ marginLeft: 4, color: "var(--warning)", fontSize: 10, cursor: "help" }}>
+                                    ⚠cap
+                                  </span>
+                                )}
                               </td>
                               <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
                                            fontFamily: "var(--font-data)",
@@ -828,11 +837,17 @@ function ChallengeSimulator({ firms }) {
                             </td>
                             <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
                                          fontFamily: "var(--font-data)", fontWeight: 700,
-                                         color: "var(--accent)" }}>
+                                         color: rec.trade_capped ? "var(--warning)" : "var(--accent)" }}>
                               {rec.sizing_type === "sqx_fixed_money"
                                 ? `$${Number(rec.param_value).toFixed(0)}`
                                 : Number(rec.param_value).toFixed(4)}
-                              {rec.note && (
+                              {rec.trade_capped && (
+                                <span title={`Lotti ridotti: il trade peggiore supererebbe il ${maxRiskPerTrade}% per trade. Valore capped al limite.`}
+                                  style={{ marginLeft: 4, fontSize: 10, color: "var(--warning)", cursor: "help" }}>
+                                  ⚠
+                                </span>
+                              )}
+                              {!rec.trade_capped && rec.note && (
                                 <span title={rec.note}
                                   style={{ marginLeft: 4, fontSize: 10,
                                            color: "var(--text-muted)", cursor: "help" }}>ⓘ</span>
