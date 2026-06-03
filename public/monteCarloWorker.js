@@ -211,19 +211,19 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
     if (sizing === "price_scaling_explicit") {
       paramName  = "base_lots";
       paramValue = Math.round(comp.base_lots * sfEA * 10000) / 10000;
-      note       = `valido @ prezzo ${comp.defaultprice}; l'EA scala automaticamente`;
+      note       = "valido @ prezzo " + (comp.defaultprice) + "; l'EA scala automaticamente";
     } else if (sizing === "price_scaling_implicit") {
       paramName  = "LotSize";
       paramValue = Math.round(comp.ref_lots * sfEA * 10000) / 10000;
-      note       = `valido @ prezzo ${comp.ref_price}; l'EA scala col prezzo`;
+      note       = "valido @ prezzo " + (comp.ref_price) + "; l'EA scala col prezzo";
     } else if (sizing === "sqx_fixed_money") {
       paramName        = "mmRiskedMoney";
       const mmBase     = comp.mm_risked_money || comp.initial_capital * 0.01;
       paramValue       = Math.round(mmBase * sfEA * 100) / 100;
       const mmOriginal = Math.round(mmBase * scaleFactorBase);
       note = capped
-        ? `ottimale sarebbe $${mmOriginal}, cappato a $${Math.round(paramValue)} per limite rischio/trade`
-        : `da ${Math.round(mmBase)}$ → ${Math.round(paramValue)}$`;
+        ? "ottimale sarebbe $" + (mmOriginal) + ", cappato a $" + (Math.round(paramValue)) + " per limite rischio/trade"
+        : "da " + (Math.round(mmBase)) + "$ → " + (Math.round(paramValue)) + "$";
     } else {
       paramName  = "Lots";
       paramValue = Math.round(comp.base_lots * sfEA * 10000) / 10000;
