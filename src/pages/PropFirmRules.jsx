@@ -80,24 +80,84 @@ function simulatePhase(scaledArr, rand, capital, dailyDDLimit, totalDDLimit,
   }
 }
 
+// ─── Costruzione serie combinata con cap per-EA ───────────────────────────────
+function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTradePct) {
+  // Calcola lo scale_factor base dal rischio medio giornaliero del PORTAFOGLIO
+  // poi applica il cap per-EA individualmente, e ricombina i P&L.
+  //
+  // Restituisce { scaledArr, anyCapped, perEaInfo }
+
+  // 1. Serie combinata grezza (a lotti backtest) per calcolare avg daily loss
+  const minLen = Math.min(...eaComponents.map(c => c.daily_pnl_dollar.length));
+  const rawCombined = new Array(minLen).fill(0);
+  for (const c of eaComponents) {
+    const arr = c.daily_pnl_dollar;
+    for (let i = 0; i < minLen; i++) rawCombined[i] += arr[arr.length - minLen + i];
+  }
+
+  const losses = rawCombined.filter(x => x < 0);
+  if (!losses.length) return { scaledArr: rawCombined, anyCapped: false, perEaInfo: [] };
+
+  const avgDailyLoss     = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
+  const riskTargetDollar = capital * riskPct / 100.0;
+  const scaleFactorBase  = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
+
+  const maxRiskDollar = capital * (maxRiskPerTradePct || 2.0) / 100.0;
+
+  // 2. Calcola scale_factor per-EA con cap individuale
+  const perEaInfo = [];
+  const eaScaleFactors = eaComponents.map(comp => {
+    const sizing = comp.lot_sizing_type || "fixed_lots";
+
+    // Rischio per singolo trade in $ con scale_factor base
+    let riskPerTradeScaled;
+    if (sizing === "sqx_fixed_money") {
+      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
+      riskPerTradeScaled = mmBase * scaleFactorBase;
+    } else {
+      const maxSinglePct = comp.max_single_trade_loss_pct || 0;
+      const maxSingleDollarBacktest = (maxSinglePct / 100.0) * comp.initial_capital;
+      riskPerTradeScaled = maxSingleDollarBacktest * scaleFactorBase;
+    }
+
+    let sfEA = scaleFactorBase;
+    let capped = false;
+    if (riskPerTradeScaled > maxRiskDollar && riskPerTradeScaled > 0) {
+      sfEA = scaleFactorBase * (maxRiskDollar / riskPerTradeScaled);
+      capped = true;
+    }
+    perEaInfo.push({ ea_name: comp.ea_name, scale_factor: sfEA, capped });
+    return sfEA;
+  });
+
+  // 3. Ricombina i P&L con lo scale_factor per-EA (cappato dove serve)
+  const scaledArr = new Array(minLen).fill(0);
+  eaComponents.forEach((comp, idx) => {
+    const arr = comp.daily_pnl_dollar;
+    const sf  = eaScaleFactors[idx];
+    for (let i = 0; i < minLen; i++) {
+      scaledArr[i] += arr[arr.length - minLen + i] * sf;
+    }
+  });
+
+  const anyCapped = perEaInfo.some(e => e.capped);
+  return { scaledArr, anyCapped, perEaInfo, scaleFactorBase };
+}
+
 // ─── Monte Carlo per un livello di rischio ────────────────────────────────────
-function runForRiskLevel(dailyPnlDollar, params, riskPct, rand) {
-  // Calcola avg daily loss in $
-  const losses = dailyPnlDollar.filter(x => x < 0);
-  if (losses.length === 0) return null;
+function runForRiskLevel(eaComponents, params, riskPct, rand) {
+  // Costruisce la serie combinata applicando il cap per-EA.
+  // Ogni EA viene scalato col suo scale_factor (cappato dove serve)
+  // PRIMA di combinare i P&L → la simulazione riflette i lotti reali.
+  const built = buildCappedScaledSeries(
+    eaComponents, params.capital, riskPct, params.max_risk_per_trade_pct
+  );
+  const scaledArr = built.scaledArr;
+  if (!scaledArr.length) return null;
 
-  const avgDailyLoss    = Math.abs(losses.reduce((a,b) => a+b, 0) / losses.length);
-  const riskTargetDollar = params.capital * riskPct / 100.0;
-  let scaleFactor        = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
-
-  // Nota: il cap per singola operazione viene applicato per-EA
-  // in computeLotRecommendations, NON qui sulla simulazione aggregata.
-  // La simulazione usa il scale_factor "libero" per mostrare il potenziale
-  // massimo; il cap sui lotti viene mostrato separatamente.
-  const tradeCapped    = false;
+  const tradeCapped      = built.anyCapped;
   const effectiveRiskPct = riskPct;
-
-  const scaledArr = dailyPnlDollar.map(x => x * scaleFactor);
+  const scaleFactor      = built.scaleFactorBase || 1.0;
 
   const dailyDDLimit = params.capital * params.daily_dd_pct  / 100.0;
   const totalDDLimit = params.capital * params.max_dd_pct    / 100.0;
@@ -274,16 +334,15 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
 
 
 // ─── Simulazione conto FUNDED (per stimare payout atteso) ─────────────────────
-function simulateFunded(dailyPnlDollar, params, riskPctFunded) {
+function simulateFunded(eaComponents, params, riskPctFunded) {
   // Simula il conto funded a rischio ridotto finché non viola un limite (Modello A).
-  // Restituisce il profitto medio accumulato fino alla violazione.
-  const losses = dailyPnlDollar.filter(x => x < 0);
-  if (!losses.length) return 0;
-
-  const avgDailyLoss     = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
-  const riskTargetDollar = params.capital * riskPctFunded / 100.0;
-  const scaleFactor      = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
-  const scaledArr        = dailyPnlDollar.map(x => x * scaleFactor);
+  // Applica il cap per-EA anche qui (a rischio dimezzato il cap potrebbe non
+  // scattare più per alcuni EA).
+  const built = buildCappedScaledSeries(
+    eaComponents, params.capital, riskPctFunded, params.max_risk_per_trade_pct
+  );
+  const scaledArr = built.scaledArr;
+  if (!scaledArr.length) return 0;
 
   const dailyDDLimit = params.capital * params.daily_dd_pct / 100.0;
   const totalDDLimit = params.capital * params.max_dd_pct   / 100.0;
@@ -347,7 +406,7 @@ self.onmessage = function(e) {
 
   const results = [];
   for (let i = 0; i < riskLevels.length; i++) {
-    const res = runForRiskLevel(daily_pnl_dollar, params, riskLevels[i], rand);
+    const res = runForRiskLevel(ea_components, params, riskLevels[i], rand);
     if (res) results.push(res);
 
     // Progresso
@@ -370,7 +429,7 @@ self.onmessage = function(e) {
     const fundedRisk = r.risk_pct * fundedRiskRatio;
 
     // Payout lordo dalla simulazione funded
-    const grossPayout = simulateFunded(daily_pnl_dollar, params, fundedRisk);
+    const grossPayout = simulateFunded(ea_components, params, fundedRisk);
 
     // Payout netto: profit share, tasse, attesa bonifico
     const netPayout = grossPayout * profitShare * (1 - taxRate) * (1 - payoutWait);
