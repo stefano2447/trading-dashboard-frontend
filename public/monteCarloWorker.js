@@ -166,7 +166,7 @@ function runForRiskLevel(dailyPnlDollar, params, riskPct, rand) {
 }
 
 // ─── Calcolo lotti consigliati ────────────────────────────────────────────────
-function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optimalRisk) {
+function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optimalRisk, maxRiskPerTradePct) {
   if (!optimalRisk || !eaComponents.length) return [];
 
   const losses = dailyPnlDollar.filter(x => x < 0);
@@ -177,7 +177,7 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
   const scaleFactor      = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
 
   // Cap per singola operazione sui lotti
-  const maxRiskPct  = capital * (params.max_risk_per_trade_pct || 2.0) / 100.0;
+  const maxRiskPct  = capital * (maxRiskPerTradePct || 2.0) / 100.0;
   const worstSingle = Math.abs(Math.min(...dailyPnlDollar.filter(x => x < 0)));
   const sfCap       = worstSingle > 0 ? maxRiskPct / worstSingle : scaleFactor;
   const sfFinal     = Math.min(scaleFactor, sfCap);
@@ -270,7 +270,8 @@ self.onmessage = function(e) {
   const nCalendar  = daily_pnl_dollar.length;
 
   const lotRecs = computeLotRecommendations(
-    daily_pnl_dollar, ea_components, params.capital, optimalRisk
+    daily_pnl_dollar, ea_components, params.capital, optimalRisk,
+    params.max_risk_per_trade_pct
   );
 
   self.postMessage({
