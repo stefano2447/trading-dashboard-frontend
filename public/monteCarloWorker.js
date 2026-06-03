@@ -76,21 +76,12 @@ function runForRiskLevel(dailyPnlDollar, params, riskPct, rand) {
   const riskTargetDollar = params.capital * riskPct / 100.0;
   let scaleFactor        = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
 
-  // Cap per singola operazione
-  const maxRiskPerTrade = params.max_risk_per_trade_pct || 2.0;
-  // Trova la perdita max per singolo trade in $ (dal pool giornaliero)
-  // Approssimazione: usiamo il minimo giornaliero come proxy del trade peggiore
-  const worstDay = Math.abs(Math.min(...dailyPnlDollar.filter(x => x < 0)));
-  let tradeCapped = false;
-  let effectiveRiskPct = riskPct;
-  if (worstDay > 0) {
-    const scaleCapTrade = (params.capital * maxRiskPerTrade / 100.0) / worstDay;
-    if (scaleFactor > scaleCapTrade) {
-      scaleFactor    = scaleCapTrade;
-      tradeCapped    = true;
-      effectiveRiskPct = Math.round(avgDailyLoss * scaleFactor / params.capital * 100 * 1000) / 1000;
-    }
-  }
+  // Nota: il cap per singola operazione viene applicato per-EA
+  // in computeLotRecommendations, NON qui sulla simulazione aggregata.
+  // La simulazione usa il scale_factor "libero" per mostrare il potenziale
+  // massimo; il cap sui lotti viene mostrato separatamente.
+  const tradeCapped    = false;
+  const effectiveRiskPct = riskPct;
 
   const scaledArr = dailyPnlDollar.map(x => x * scaleFactor);
 
@@ -172,58 +163,95 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
   const losses = dailyPnlDollar.filter(x => x < 0);
   if (!losses.length) return [];
 
+  // Scale factor base: porta il rischio medio giornaliero al target ottimale
   const avgDailyLoss     = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
   const riskTargetDollar = capital * optimalRisk / 100.0;
-  const scaleFactor      = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
+  const scaleFactorBase  = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
 
-  // Cap per singola operazione sui lotti
-  const maxRiskPct  = capital * (maxRiskPerTradePct || 2.0) / 100.0;
-  const worstSingle = Math.abs(Math.min(...dailyPnlDollar.filter(x => x < 0)));
-  const sfCap       = worstSingle > 0 ? maxRiskPct / worstSingle : scaleFactor;
-  const sfFinal     = Math.min(scaleFactor, sfCap);
-  const lotCapped   = sfFinal < scaleFactor;
+  const maxRiskDollar = capital * (maxRiskPerTradePct || 2.0) / 100.0;
 
   return eaComponents.map(comp => {
     const sizing = comp.lot_sizing_type || "fixed_lots";
+
+    // ── Calcola il rischio per singolo trade in $ (con scale_factor base) ──
+    // La logica dipende dal tipo di sizing dell'EA:
+    //
+    // sqx_fixed_money: il rischio per trade è mmRiskedMoney × scale_factor
+    //   → mmRiskedMoney è la definizione esatta del rischio per trade
+    //   → NON usare la perdita giornaliera (può contenere più trade!)
+    //
+    // tutti gli altri: usa max_single_trade_loss_pct dal backtest
+    //   → è la perdita del singolo trade peggiore in % del capitale backtest
+    //   → convertita in $ con il capitale challenge
+
+    let riskPerTradeScaled;  // rischio per singolo trade in $ con scale_factor base
+
+    if (sizing === "sqx_fixed_money") {
+      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
+      riskPerTradeScaled = mmBase * scaleFactorBase;
+    } else {
+      const maxSinglePct = comp.max_single_trade_loss_pct || 0;
+      // max_single_trade_loss_pct è in % del capitale BACKTEST
+      // prima converti in $ backtest, poi applica scale_factor
+      const maxSingleDollarBacktest = (maxSinglePct / 100.0) * comp.initial_capital;
+      riskPerTradeScaled = maxSingleDollarBacktest * scaleFactorBase;
+    }
+
+    // Cap per-EA: riduci solo questo EA se supera il limite
+    let sfEA      = scaleFactorBase;
+    let capped    = false;
+    if (riskPerTradeScaled > maxRiskDollar && riskPerTradeScaled > 0) {
+      sfEA   = scaleFactorBase * (maxRiskDollar / riskPerTradeScaled);
+      capped = true;
+    }
+
+    // ── Calcola valore parametro con scale_factor per-EA ──────────────────
     let paramName, paramValue, note;
 
     if (sizing === "price_scaling_explicit") {
       paramName  = "base_lots";
-      paramValue = Math.round(comp.base_lots * sfFinal * 10000) / 10000;
+      paramValue = Math.round(comp.base_lots * sfEA * 10000) / 10000;
       note       = `valido @ prezzo ${comp.defaultprice}; l'EA scala automaticamente`;
     } else if (sizing === "price_scaling_implicit") {
       paramName  = "LotSize";
-      paramValue = Math.round(comp.ref_lots * sfFinal * 10000) / 10000;
+      paramValue = Math.round(comp.ref_lots * sfEA * 10000) / 10000;
       note       = `valido @ prezzo ${comp.ref_price}; l'EA scala col prezzo`;
     } else if (sizing === "sqx_fixed_money") {
-      paramName  = "mmRiskedMoney";
-      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
-      paramValue = Math.round(mmBase * sfFinal * 100) / 100;
-      note       = `da ${Math.round(mmBase)}$ → ${Math.round(paramValue)}$`;
+      paramName        = "mmRiskedMoney";
+      const mmBase     = comp.mm_risked_money || comp.initial_capital * 0.01;
+      paramValue       = Math.round(mmBase * sfEA * 100) / 100;
+      const mmOriginal = Math.round(mmBase * scaleFactorBase);
+      note = capped
+        ? `ottimale sarebbe $${mmOriginal}, cappato a $${Math.round(paramValue)} per limite rischio/trade`
+        : `da ${Math.round(mmBase)}$ → ${Math.round(paramValue)}$`;
     } else {
       paramName  = "Lots";
-      paramValue = Math.round(comp.base_lots * sfFinal * 10000) / 10000;
+      paramValue = Math.round(comp.base_lots * sfEA * 10000) / 10000;
       note       = "lotti fissi";
     }
 
-    // Calcola loss attesa con i nuovi parametri
+    // Loss media/max giornaliera attesa con i lotti finali
     const eaArr    = comp.daily_pnl_dollar || [];
     const eaLosses = eaArr.filter(x => x < 0);
     const avgEALoss = eaLosses.length
-      ? Math.abs(eaLosses.reduce((a,b)=>a+b,0)/eaLosses.length) * scaleFactor
+      ? Math.abs(eaLosses.reduce((a,b)=>a+b,0)/eaLosses.length) * sfEA
       : null;
     const maxEALoss = eaLosses.length
-      ? Math.abs(Math.min(...eaLosses)) * scaleFactor
+      ? Math.abs(Math.min(...eaLosses)) * sfEA
       : null;
 
+    // Rischio per singolo trade effettivo (dopo eventuale cap)
+    const effectiveSingleRisk = Math.round(riskPerTradeScaled * (sfEA / scaleFactorBase));
+
     return {
-      ea_name:      comp.ea_name,
-      sizing_type:  sizing,
-      param_name:   paramName,
-      param_value:  paramValue,
+      ea_name:                        comp.ea_name,
+      sizing_type:                    sizing,
+      param_name:                     paramName,
+      param_value:                    paramValue,
       note,
-      trade_capped: lotCapped,
-      scale_factor: Math.round(sfFinal * 10000) / 10000,
+      trade_capped:                   capped,
+      scale_factor:                   Math.round(sfEA * 10000) / 10000,
+      effective_single_trade_risk_dollar: effectiveSingleRisk,
       expected_avg_daily_loss_dollar: avgEALoss ? Math.round(avgEALoss) : null,
       expected_max_daily_loss_dollar: maxEALoss ? Math.round(maxEALoss) : null,
     };
