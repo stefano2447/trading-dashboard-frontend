@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Edit2, Check, X, ChevronDown, ChevronUp,
          Play, TrendingUp, AlertTriangle, Target } from "lucide-react";
-import { api } from "../api/client";
+import { api } from "../services/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -253,27 +253,24 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
     const sizing = comp.lot_sizing_type || "fixed_lots";
 
     // ── Calcola il rischio per singolo trade in $ (con scale_factor base) ──
-    // La logica dipende dal tipo di sizing dell'EA:
-    //
     // sqx_fixed_money: il rischio per trade è mmRiskedMoney × scale_factor
-    //   → mmRiskedMoney è la definizione esatta del rischio per trade
-    //   → NON usare la perdita giornaliera (può contenere più trade!)
-    //
-    // tutti gli altri: usa max_single_trade_loss_pct dal backtest
-    //   → è la perdita del singolo trade peggiore in % del capitale backtest
-    //   → convertita in $ con il capitale challenge
+    //   → definizione esatta, non serve stima
+    // tutti gli altri: usa p90_single_trade_loss_pct (90° percentile perdite)
+    //   → stima del rischio SL teorico, esclude outlier da slippage estremo
+    //   → fallback su max_single se p90 non disponibile
 
-    let riskPerTradeScaled;  // rischio per singolo trade in $ con scale_factor base
+    let riskPerTradeScaled;
 
     if (sizing === "sqx_fixed_money") {
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
       riskPerTradeScaled = mmBase * scaleFactorBase;
     } else {
-      const maxSinglePct = comp.max_single_trade_loss_pct || 0;
-      // max_single_trade_loss_pct è in % del capitale BACKTEST
-      // prima converti in $ backtest, poi applica scale_factor
-      const maxSingleDollarBacktest = (maxSinglePct / 100.0) * comp.initial_capital;
-      riskPerTradeScaled = maxSingleDollarBacktest * scaleFactorBase;
+      // Usa p90 come stima del rischio teorico per trade
+      const p90Pct = comp.p90_single_trade_loss_pct
+                     || comp.max_single_trade_loss_pct
+                     || 0;
+      const p90Dollar = (p90Pct / 100.0) * comp.initial_capital;
+      riskPerTradeScaled = p90Dollar * scaleFactorBase;
     }
 
     // Cap per-EA: riduci solo questo EA se supera il limite
@@ -319,20 +316,33 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       ? Math.abs(Math.min(...eaLosses)) * sfEA
       : null;
 
-    // Rischio per singolo trade effettivo (dopo eventuale cap)
-    const effectiveSingleRisk = Math.round(riskPerTradeScaled * (sfEA / scaleFactorBase));
+    // Rischio per singolo trade: usa p90 per price_scaling, mmRiskedMoney per sqx
+    // Questo è il rischio teorico (SL), non il caso peggiore con slippage
+    let effectiveSingleRisk;
+    if (sizing === "sqx_fixed_money") {
+      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
+      effectiveSingleRisk = Math.round(mmBase * sfEA);
+    } else {
+      const p90Pct = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 0;
+      effectiveSingleRisk = Math.round((p90Pct / 100.0) * comp.initial_capital * sfEA);
+    }
+    // Worst case storico (include slippage)
+    const worstCaseSingleRisk = Math.round(
+      (comp.max_single_trade_loss_pct || 0) / 100.0 * comp.initial_capital * sfEA
+    );
 
     return {
-      ea_name:                        comp.ea_name,
-      sizing_type:                    sizing,
-      param_name:                     paramName,
-      param_value:                    paramValue,
+      ea_name:                          comp.ea_name,
+      sizing_type:                      sizing,
+      param_name:                       paramName,
+      param_value:                      paramValue,
       note,
-      trade_capped:                   capped,
-      scale_factor:                   Math.round(sfEA * 10000) / 10000,
-      effective_single_trade_risk_dollar: effectiveSingleRisk,
-      expected_avg_daily_loss_dollar: avgEALoss ? Math.round(avgEALoss) : null,
-      expected_max_daily_loss_dollar: maxEALoss ? Math.round(maxEALoss) : null,
+      trade_capped:                     capped,
+      scale_factor:                     Math.round(sfEA * 10000) / 10000,
+      effective_single_trade_risk_dollar: effectiveSingleRisk,     // rischio teorico (SL)
+      worst_case_single_trade_dollar:   worstCaseSingleRisk,       // peggior caso storico
+      expected_avg_daily_loss_dollar:   avgEALoss ? Math.round(avgEALoss) : null,
+      expected_max_daily_loss_dollar:   maxEALoss ? Math.round(maxEALoss) : null,
     };
   });
 }
@@ -819,8 +829,9 @@ function ChallengeSimulator({ firms }) {
         mm_risked_money:          ea.mm_risked_money || 0,
         ref_price:                ea.ref_price || 0,
         ref_lots:                 ea.ref_lots || ea.base_lots || 0.01,
-        max_single_trade_loss_pct: ea.max_single_trade_loss_pct || 0,
-        daily_pnl_dollar:         dailyDollar,
+        max_single_trade_loss_pct:  ea.max_single_trade_loss_pct || 0,
+        p90_single_trade_loss_pct:  ea.p90_single_trade_loss_pct || 0,
+        daily_pnl_dollar:           dailyDollar,
       }];
       return { dailyDollar, components };
     }
@@ -847,8 +858,9 @@ function ChallengeSimulator({ firms }) {
         mm_risked_money:           ea.mm_risked_money || 0,
         ref_price:                 ea.ref_price || 0,
         ref_lots:                  ea.ref_lots || ea.base_lots || 0.01,
-        max_single_trade_loss_pct: ea.max_single_trade_loss_pct || 0,
-        daily_pnl_dollar:          dailyDollar,
+        max_single_trade_loss_pct:  ea.max_single_trade_loss_pct || 0,
+        p90_single_trade_loss_pct:  ea.p90_single_trade_loss_pct || 0,
+        daily_pnl_dollar:           dailyDollar,
       });
       allSeries.push(dailyDollar);
     }
@@ -1397,9 +1409,15 @@ function ChallengeSimulator({ firms }) {
                             <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
                                          fontFamily: "var(--font-data)",
                                          color: rec.trade_capped ? "var(--warning)" : "var(--text-secondary)" }}>
-                              {rec.effective_single_trade_risk_dollar != null
-                                ? `-$${rec.effective_single_trade_risk_dollar.toFixed(0)}`
-                                : "—"}
+                              {rec.effective_single_trade_risk_dollar != null ? (
+                                <span
+                                  title={rec.worst_case_single_trade_dollar
+                                    ? "Rischio SL teorico. Worst case storico (con slippage): -$" + rec.worst_case_single_trade_dollar.toFixed(0)
+                                    : "Rischio teorico per trade (90° percentile perdite)"}
+                                  style={{ cursor: "help", borderBottom: "1px dashed currentColor" }}>
+                                  -${rec.effective_single_trade_risk_dollar.toFixed(0)}
+                                </span>
+                              ) : "—"}
                             </td>
                             <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
                                          fontFamily: "var(--font-data)", color: "var(--warning)" }}>

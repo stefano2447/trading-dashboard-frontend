@@ -66,24 +66,89 @@ function simulatePhase(scaledArr, rand, capital, dailyDDLimit, totalDDLimit,
   }
 }
 
+// ─── Costruzione serie combinata con cap per-EA ───────────────────────────────
+function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTradePct) {
+  // Calcola lo scale_factor base dal rischio medio giornaliero del PORTAFOGLIO
+  // poi applica il cap per-EA individualmente, e ricombina i P&L.
+  //
+  // Restituisce { scaledArr, anyCapped, perEaInfo }
+
+  // 1. Serie combinata grezza (a lotti backtest) per calcolare avg daily loss
+  const minLen = Math.min(...eaComponents.map(c => c.daily_pnl_dollar.length));
+  const rawCombined = new Array(minLen).fill(0);
+  for (const c of eaComponents) {
+    const arr = c.daily_pnl_dollar;
+    for (let i = 0; i < minLen; i++) rawCombined[i] += arr[arr.length - minLen + i];
+  }
+
+  const losses = rawCombined.filter(x => x < 0);
+  if (!losses.length) return { scaledArr: rawCombined, anyCapped: false, perEaInfo: [] };
+
+  const avgDailyLoss     = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
+  const riskTargetDollar = capital * riskPct / 100.0;
+  const scaleFactorBase  = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
+
+  const maxRiskDollar = capital * (maxRiskPerTradePct || 2.0) / 100.0;
+
+  // 2. Calcola scale_factor per-EA con cap individuale
+  const perEaInfo = [];
+  const eaScaleFactors = eaComponents.map(comp => {
+    const sizing = comp.lot_sizing_type || "fixed_lots";
+
+    // Rischio per singolo trade in $ con scale_factor base
+    let riskPerTradeScaled;
+    if (sizing === "sqx_fixed_money") {
+      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
+      riskPerTradeScaled = mmBase * scaleFactorBase;
+    } else {
+      const maxSinglePct = comp.max_single_trade_loss_pct || 0;
+      const maxSingleDollarBacktest = (maxSinglePct / 100.0) * comp.initial_capital;
+      riskPerTradeScaled = maxSingleDollarBacktest * scaleFactorBase;
+    }
+
+    let sfEA = scaleFactorBase;
+    let capped = false;
+    if (riskPerTradeScaled > maxRiskDollar && riskPerTradeScaled > 0) {
+      sfEA = scaleFactorBase * (maxRiskDollar / riskPerTradeScaled);
+      capped = true;
+    }
+    perEaInfo.push({ ea_name: comp.ea_name, scale_factor: sfEA, capped });
+    return sfEA;
+  });
+
+  // 3. Ricombina i P&L con lo scale_factor per-EA (cappato dove serve)
+  const scaledArr = new Array(minLen).fill(0);
+  eaComponents.forEach((comp, idx) => {
+    const arr = comp.daily_pnl_dollar;
+    const sf  = eaScaleFactors[idx];
+    for (let i = 0; i < minLen; i++) {
+      scaledArr[i] += arr[arr.length - minLen + i] * sf;
+    }
+  });
+
+  const anyCapped = perEaInfo.some(e => e.capped);
+  return { scaledArr, anyCapped, perEaInfo, scaleFactorBase };
+}
+
 // ─── Monte Carlo per un livello di rischio ────────────────────────────────────
-function runForRiskLevel(dailyPnlDollar, params, riskPct, rand) {
-  // Calcola avg daily loss in $
-  const losses = dailyPnlDollar.filter(x => x < 0);
-  if (losses.length === 0) return null;
+function runForRiskLevel(eaComponents, params, riskPct) {
+  // Seed FISSO per ogni livello di rischio: garantisce che tutti i livelli
+  // siano testati sulle stesse identiche sequenze simulate.
+  // Così l'unica differenza tra i livelli è lo scale_factor, non il caso.
+  // Quando il cap blocca lo scale_factor, i risultati diventano identici.
+  const rand = mulberry32(12345);
+  // Costruisce la serie combinata applicando il cap per-EA.
+  // Ogni EA viene scalato col suo scale_factor (cappato dove serve)
+  // PRIMA di combinare i P&L → la simulazione riflette i lotti reali.
+  const built = buildCappedScaledSeries(
+    eaComponents, params.capital, riskPct, params.max_risk_per_trade_pct
+  );
+  const scaledArr = built.scaledArr;
+  if (!scaledArr.length) return null;
 
-  const avgDailyLoss    = Math.abs(losses.reduce((a,b) => a+b, 0) / losses.length);
-  const riskTargetDollar = params.capital * riskPct / 100.0;
-  let scaleFactor        = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
-
-  // Nota: il cap per singola operazione viene applicato per-EA
-  // in computeLotRecommendations, NON qui sulla simulazione aggregata.
-  // La simulazione usa il scale_factor "libero" per mostrare il potenziale
-  // massimo; il cap sui lotti viene mostrato separatamente.
-  const tradeCapped    = false;
+  const tradeCapped      = built.anyCapped;
   const effectiveRiskPct = riskPct;
-
-  const scaledArr = dailyPnlDollar.map(x => x * scaleFactor);
+  const scaleFactor      = built.scaleFactorBase || 1.0;
 
   const dailyDDLimit = params.capital * params.daily_dd_pct  / 100.0;
   const totalDDLimit = params.capital * params.max_dd_pct    / 100.0;
@@ -174,27 +239,24 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
     const sizing = comp.lot_sizing_type || "fixed_lots";
 
     // ── Calcola il rischio per singolo trade in $ (con scale_factor base) ──
-    // La logica dipende dal tipo di sizing dell'EA:
-    //
     // sqx_fixed_money: il rischio per trade è mmRiskedMoney × scale_factor
-    //   → mmRiskedMoney è la definizione esatta del rischio per trade
-    //   → NON usare la perdita giornaliera (può contenere più trade!)
-    //
-    // tutti gli altri: usa max_single_trade_loss_pct dal backtest
-    //   → è la perdita del singolo trade peggiore in % del capitale backtest
-    //   → convertita in $ con il capitale challenge
+    //   → definizione esatta, non serve stima
+    // tutti gli altri: usa p90_single_trade_loss_pct (90° percentile perdite)
+    //   → stima del rischio SL teorico, esclude outlier da slippage estremo
+    //   → fallback su max_single se p90 non disponibile
 
-    let riskPerTradeScaled;  // rischio per singolo trade in $ con scale_factor base
+    let riskPerTradeScaled;
 
     if (sizing === "sqx_fixed_money") {
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
       riskPerTradeScaled = mmBase * scaleFactorBase;
     } else {
-      const maxSinglePct = comp.max_single_trade_loss_pct || 0;
-      // max_single_trade_loss_pct è in % del capitale BACKTEST
-      // prima converti in $ backtest, poi applica scale_factor
-      const maxSingleDollarBacktest = (maxSinglePct / 100.0) * comp.initial_capital;
-      riskPerTradeScaled = maxSingleDollarBacktest * scaleFactorBase;
+      // Usa p90 come stima del rischio teorico per trade
+      const p90Pct = comp.p90_single_trade_loss_pct
+                     || comp.max_single_trade_loss_pct
+                     || 0;
+      const p90Dollar = (p90Pct / 100.0) * comp.initial_capital;
+      riskPerTradeScaled = p90Dollar * scaleFactorBase;
     }
 
     // Cap per-EA: riduci solo questo EA se supera il limite
@@ -240,22 +302,93 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       ? Math.abs(Math.min(...eaLosses)) * sfEA
       : null;
 
-    // Rischio per singolo trade effettivo (dopo eventuale cap)
-    const effectiveSingleRisk = Math.round(riskPerTradeScaled * (sfEA / scaleFactorBase));
+    // Rischio per singolo trade: usa p90 per price_scaling, mmRiskedMoney per sqx
+    // Questo è il rischio teorico (SL), non il caso peggiore con slippage
+    let effectiveSingleRisk;
+    if (sizing === "sqx_fixed_money") {
+      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
+      effectiveSingleRisk = Math.round(mmBase * sfEA);
+    } else {
+      const p90Pct = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 0;
+      effectiveSingleRisk = Math.round((p90Pct / 100.0) * comp.initial_capital * sfEA);
+    }
+    // Worst case storico (include slippage)
+    const worstCaseSingleRisk = Math.round(
+      (comp.max_single_trade_loss_pct || 0) / 100.0 * comp.initial_capital * sfEA
+    );
 
     return {
-      ea_name:                        comp.ea_name,
-      sizing_type:                    sizing,
-      param_name:                     paramName,
-      param_value:                    paramValue,
+      ea_name:                          comp.ea_name,
+      sizing_type:                      sizing,
+      param_name:                       paramName,
+      param_value:                      paramValue,
       note,
-      trade_capped:                   capped,
-      scale_factor:                   Math.round(sfEA * 10000) / 10000,
-      effective_single_trade_risk_dollar: effectiveSingleRisk,
-      expected_avg_daily_loss_dollar: avgEALoss ? Math.round(avgEALoss) : null,
-      expected_max_daily_loss_dollar: maxEALoss ? Math.round(maxEALoss) : null,
+      trade_capped:                     capped,
+      scale_factor:                     Math.round(sfEA * 10000) / 10000,
+      effective_single_trade_risk_dollar: effectiveSingleRisk,     // rischio teorico (SL)
+      worst_case_single_trade_dollar:   worstCaseSingleRisk,       // peggior caso storico
+      expected_avg_daily_loss_dollar:   avgEALoss ? Math.round(avgEALoss) : null,
+      expected_max_daily_loss_dollar:   maxEALoss ? Math.round(maxEALoss) : null,
     };
   });
+}
+
+
+// ─── Simulazione conto FUNDED (per stimare payout atteso) ─────────────────────
+function simulateFunded(eaComponents, params, riskPctFunded) {
+  // Simula il conto funded a rischio ridotto finché non viola un limite (Modello A).
+  // Applica il cap per-EA anche qui (a rischio dimezzato il cap potrebbe non
+  // scattare più per alcuni EA).
+  const built = buildCappedScaledSeries(
+    eaComponents, params.capital, riskPctFunded, params.max_risk_per_trade_pct
+  );
+  const scaledArr = built.scaledArr;
+  if (!scaledArr.length) return 0;
+
+  const dailyDDLimit = params.capital * params.daily_dd_pct / 100.0;
+  const totalDDLimit = params.capital * params.max_dd_pct   / 100.0;
+
+  // Seed fisso anche qui per coerenza tra livelli di rischio
+  const rand = mulberry32(67890);
+  const nSims = Math.min(params.n_simulations, 2000);  // funded sim più leggera
+
+  // Limite massimo di giorni per simulazione funded (evita loop infiniti)
+  // Un conto funded "sopravvive" mediamente molti mesi; cap a 2 anni
+  const maxDays = 504;  // ~2 anni di trading
+
+  let totalProfit = 0;
+
+  for (let s = 0; s < nSims; s++) {
+    let balance     = params.capital;
+    let peakBalance = params.capital;
+    let day         = 0;
+    let violated    = false;
+
+    while (!violated && day < maxDays) {
+      day++;
+      const dayPnl = scaledArr[Math.floor(rand() * scaledArr.length)];
+
+      if (dayPnl !== 0) {
+        // Daily DD
+        if (dayPnl < 0 && Math.abs(dayPnl) > dailyDDLimit) {
+          violated = true;
+          break;
+        }
+        balance += dayPnl;
+        if (balance > peakBalance) peakBalance = balance;
+        if (peakBalance - balance > totalDDLimit) {
+          violated = true;
+          break;
+        }
+      }
+    }
+
+    // Profitto realizzato fino alla violazione (o fine periodo)
+    const profit = Math.max(0, balance - params.capital);
+    totalProfit += profit;
+  }
+
+  return totalProfit / nSims;  // profitto medio lordo
 }
 
 // ─── Entry point del Worker ───────────────────────────────────────────────────
@@ -270,26 +403,72 @@ self.onmessage = function(e) {
     r += params.risk_step_pct;
   }
 
-  // PRNG deterministico ma diverso per ogni run
-  const rand = mulberry32(Date.now() & 0xFFFFFFFF);
-
   const results = [];
   for (let i = 0; i < riskLevels.length; i++) {
-    const res = runForRiskLevel(daily_pnl_dollar, params, riskLevels[i], rand);
+    const res = runForRiskLevel(ea_components, params, riskLevels[i]);
     if (res) results.push(res);
 
     // Progresso
     self.postMessage({ type: "progress", pct: Math.round((i+1)/riskLevels.length*100) });
   }
 
-  // Ottimale
-  let bestIdx = 0, bestScore = -1;
+  // ── Criterio di ottimizzazione ────────────────────────────────────────────
+  // Parametri economici (con default ragionevoli)
+  const costChallenge   = params.cost_challenge      ?? 500;
+  const profitShare     = params.profit_share        ?? 0.80;
+  const taxRate         = params.tax_rate            ?? 0.25;
+  const payoutWait      = params.payout_wait_factor  ?? 0.075;  // 7.5%
+  const fundedRiskRatio = params.funded_risk_ratio   ?? 0.50;   // dimezza
+  const criterion       = params.optimal_criterion   || "ev_day";
+
+  // Per il criterio EV/giorno calcoliamo il payout funded per ogni livello
+  // (il rischio funded = rischio challenge × funded_risk_ratio)
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
-    if (r.p_success > 0 && r.avg_days_success > 0) {
-      const score = r.p_success / Math.sqrt(r.avg_days_success + 1);
-      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    const fundedRisk = r.risk_pct * fundedRiskRatio;
+
+    // Payout lordo dalla simulazione funded
+    const grossPayout = simulateFunded(ea_components, params, fundedRisk);
+
+    // Payout netto: profit share, tasse, attesa bonifico
+    const netPayout = grossPayout * profitShare * (1 - taxRate) * (1 - payoutWait);
+
+    // Economia del ciclo completo
+    const pSucc        = r.p_success > 0 ? r.p_success : 0.0001;
+    const attempts     = 1 / pSucc;
+    const totalCost    = costChallenge * attempts;
+    const challengeDays = r.avg_days_success * attempts;
+    // Giorni funded: stima dal payout (assumiamo ~252 gg/anno di vita media
+    // del conto, ma usiamo una proxy: i giorni challenge come riferimento minimo)
+    // Per semplicità il tempo del ciclo = challengeDays + giorni per guadagnare il payout
+    // Approssimiamo i giorni funded come proporzionali al payout/rendimento giornaliero
+    const fundedDays   = 126;  // ~6 mesi di vita media stimata del conto funded
+
+    const totalDays = challengeDays + fundedDays;
+    const ev        = netPayout - totalCost;
+    const evPerDay  = totalDays > 0 ? ev / totalDays : -1e9;
+
+    r.gross_payout    = Math.round(grossPayout);
+    r.net_payout      = Math.round(netPayout);
+    r.expected_cost   = Math.round(totalCost);
+    r.ev              = Math.round(ev);
+    r.ev_per_day      = Math.round(evPerDay * 100) / 100;
+    r.funded_risk_pct = Math.round(fundedRisk * 1000) / 1000;
+  }
+
+  // Seleziona l'ottimale in base al criterio scelto
+  let bestIdx = 0, bestScore = -1e9;
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    let score;
+    if (criterion === "max_prob") {
+      score = r.p_success;
+    } else if (criterion === "balanced") {
+      score = r.avg_days_success > 0 ? r.p_success / Math.sqrt(r.avg_days_success + 1) : -1e9;
+    } else {  // ev_day (default)
+      score = r.ev_per_day;
     }
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
   }
 
   const optimalRisk = results[bestIdx]?.risk_pct ?? null;
@@ -307,6 +486,7 @@ self.onmessage = function(e) {
     data: {
       results,
       optimal_risk_pct:    optimalRisk,
+      optimal_criterion:   criterion,
       lot_recommendations: lotRecs,
       n_trading_days:      nActive,
       n_calendar_days:     nCalendar,
