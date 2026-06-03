@@ -380,7 +380,7 @@ function ChallengeSimulator({ firms }) {
     setResults(null);
 
     const worker = new Worker(
-      new URL("/monteCarloWorker.js", import.meta.url),
+      new URL("../../public/monteCarloWorker.js", import.meta.url),
       { type: "classic" }
     );
     workerRef.current = worker;
