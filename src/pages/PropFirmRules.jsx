@@ -145,7 +145,12 @@ function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTrade
 }
 
 // ─── Monte Carlo per un livello di rischio ────────────────────────────────────
-function runForRiskLevel(eaComponents, params, riskPct, rand) {
+function runForRiskLevel(eaComponents, params, riskPct) {
+  // Seed FISSO per ogni livello di rischio: garantisce che tutti i livelli
+  // siano testati sulle stesse identiche sequenze simulate.
+  // Così l'unica differenza tra i livelli è lo scale_factor, non il caso.
+  // Quando il cap blocca lo scale_factor, i risultati diventano identici.
+  const rand = mulberry32(12345);
   // Costruisce la serie combinata applicando il cap per-EA.
   // Ogni EA viene scalato col suo scale_factor (cappato dove serve)
   // PRIMA di combinare i P&L → la simulazione riflette i lotti reali.
@@ -347,7 +352,8 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
   const dailyDDLimit = params.capital * params.daily_dd_pct / 100.0;
   const totalDDLimit = params.capital * params.max_dd_pct   / 100.0;
 
-  const rand = mulberry32((Date.now() ^ 0x9E3779B9) & 0xFFFFFFFF);
+  // Seed fisso anche qui per coerenza tra livelli di rischio
+  const rand = mulberry32(67890);
   const nSims = Math.min(params.n_simulations, 2000);  // funded sim più leggera
 
   // Limite massimo di giorni per simulazione funded (evita loop infiniti)
@@ -401,12 +407,9 @@ self.onmessage = function(e) {
     r += params.risk_step_pct;
   }
 
-  // PRNG deterministico ma diverso per ogni run
-  const rand = mulberry32(Date.now() & 0xFFFFFFFF);
-
   const results = [];
   for (let i = 0; i < riskLevels.length; i++) {
-    const res = runForRiskLevel(ea_components, params, riskLevels[i], rand);
+    const res = runForRiskLevel(ea_components, params, riskLevels[i]);
     if (res) results.push(res);
 
     // Progresso
