@@ -272,6 +272,64 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
   });
 }
 
+
+// ─── Simulazione conto FUNDED (per stimare payout atteso) ─────────────────────
+function simulateFunded(dailyPnlDollar, params, riskPctFunded) {
+  // Simula il conto funded a rischio ridotto finché non viola un limite (Modello A).
+  // Restituisce il profitto medio accumulato fino alla violazione.
+  const losses = dailyPnlDollar.filter(x => x < 0);
+  if (!losses.length) return 0;
+
+  const avgDailyLoss     = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
+  const riskTargetDollar = params.capital * riskPctFunded / 100.0;
+  const scaleFactor      = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
+  const scaledArr        = dailyPnlDollar.map(x => x * scaleFactor);
+
+  const dailyDDLimit = params.capital * params.daily_dd_pct / 100.0;
+  const totalDDLimit = params.capital * params.max_dd_pct   / 100.0;
+
+  const rand = mulberry32((Date.now() ^ 0x9E3779B9) & 0xFFFFFFFF);
+  const nSims = Math.min(params.n_simulations, 2000);  // funded sim più leggera
+
+  // Limite massimo di giorni per simulazione funded (evita loop infiniti)
+  // Un conto funded "sopravvive" mediamente molti mesi; cap a 2 anni
+  const maxDays = 504;  // ~2 anni di trading
+
+  let totalProfit = 0;
+
+  for (let s = 0; s < nSims; s++) {
+    let balance     = params.capital;
+    let peakBalance = params.capital;
+    let day         = 0;
+    let violated    = false;
+
+    while (!violated && day < maxDays) {
+      day++;
+      const dayPnl = scaledArr[Math.floor(rand() * scaledArr.length)];
+
+      if (dayPnl !== 0) {
+        // Daily DD
+        if (dayPnl < 0 && Math.abs(dayPnl) > dailyDDLimit) {
+          violated = true;
+          break;
+        }
+        balance += dayPnl;
+        if (balance > peakBalance) peakBalance = balance;
+        if (peakBalance - balance > totalDDLimit) {
+          violated = true;
+          break;
+        }
+      }
+    }
+
+    // Profitto realizzato fino alla violazione (o fine periodo)
+    const profit = Math.max(0, balance - params.capital);
+    totalProfit += profit;
+  }
+
+  return totalProfit / nSims;  // profitto medio lordo
+}
+
 // ─── Entry point del Worker ───────────────────────────────────────────────────
 self.onmessage = function(e) {
   const { daily_pnl_dollar, ea_components, params } = e.data;
@@ -296,14 +354,63 @@ self.onmessage = function(e) {
     self.postMessage({ type: "progress", pct: Math.round((i+1)/riskLevels.length*100) });
   }
 
-  // Ottimale
-  let bestIdx = 0, bestScore = -1;
+  // ── Criterio di ottimizzazione ────────────────────────────────────────────
+  // Parametri economici (con default ragionevoli)
+  const costChallenge   = params.cost_challenge      ?? 500;
+  const profitShare     = params.profit_share        ?? 0.80;
+  const taxRate         = params.tax_rate            ?? 0.25;
+  const payoutWait      = params.payout_wait_factor  ?? 0.075;  // 7.5%
+  const fundedRiskRatio = params.funded_risk_ratio   ?? 0.50;   // dimezza
+  const criterion       = params.optimal_criterion   || "ev_day";
+
+  // Per il criterio EV/giorno calcoliamo il payout funded per ogni livello
+  // (il rischio funded = rischio challenge × funded_risk_ratio)
   for (let i = 0; i < results.length; i++) {
     const r = results[i];
-    if (r.p_success > 0 && r.avg_days_success > 0) {
-      const score = r.p_success / Math.sqrt(r.avg_days_success + 1);
-      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    const fundedRisk = r.risk_pct * fundedRiskRatio;
+
+    // Payout lordo dalla simulazione funded
+    const grossPayout = simulateFunded(daily_pnl_dollar, params, fundedRisk);
+
+    // Payout netto: profit share, tasse, attesa bonifico
+    const netPayout = grossPayout * profitShare * (1 - taxRate) * (1 - payoutWait);
+
+    // Economia del ciclo completo
+    const pSucc        = r.p_success > 0 ? r.p_success : 0.0001;
+    const attempts     = 1 / pSucc;
+    const totalCost    = costChallenge * attempts;
+    const challengeDays = r.avg_days_success * attempts;
+    // Giorni funded: stima dal payout (assumiamo ~252 gg/anno di vita media
+    // del conto, ma usiamo una proxy: i giorni challenge come riferimento minimo)
+    // Per semplicità il tempo del ciclo = challengeDays + giorni per guadagnare il payout
+    // Approssimiamo i giorni funded come proporzionali al payout/rendimento giornaliero
+    const fundedDays   = 126;  // ~6 mesi di vita media stimata del conto funded
+
+    const totalDays = challengeDays + fundedDays;
+    const ev        = netPayout - totalCost;
+    const evPerDay  = totalDays > 0 ? ev / totalDays : -1e9;
+
+    r.gross_payout    = Math.round(grossPayout);
+    r.net_payout      = Math.round(netPayout);
+    r.expected_cost   = Math.round(totalCost);
+    r.ev              = Math.round(ev);
+    r.ev_per_day      = Math.round(evPerDay * 100) / 100;
+    r.funded_risk_pct = Math.round(fundedRisk * 1000) / 1000;
+  }
+
+  // Seleziona l'ottimale in base al criterio scelto
+  let bestIdx = 0, bestScore = -1e9;
+  for (let i = 0; i < results.length; i++) {
+    const r = results[i];
+    let score;
+    if (criterion === "max_prob") {
+      score = r.p_success;
+    } else if (criterion === "balanced") {
+      score = r.avg_days_success > 0 ? r.p_success / Math.sqrt(r.avg_days_success + 1) : -1e9;
+    } else {  // ev_day (default)
+      score = r.ev_per_day;
     }
+    if (score > bestScore) { bestScore = score; bestIdx = i; }
   }
 
   const optimalRisk = results[bestIdx]?.risk_pct ?? null;
@@ -321,6 +428,7 @@ self.onmessage = function(e) {
     data: {
       results,
       optimal_risk_pct:    optimalRisk,
+      optimal_criterion:   criterion,
       lot_recommendations: lotRecs,
       n_trading_days:      nActive,
       n_calendar_days:     nCalendar,
@@ -599,6 +707,12 @@ function ChallengeSimulator({ firms }) {
   const [riskStep,       setRiskStep]       = useState(0.25);
   const [nSim,           setNSim]           = useState(3000);
   const [maxRiskPerTrade, setMaxRiskPerTrade] = useState(2.0);
+  // Parametri economici per il criterio EV/giorno
+  const [costChallenge,  setCostChallenge]  = useState(500);
+  const [profitShare,    setProfitShare]    = useState(80);
+  const [taxRate,        setTaxRate]        = useState(25);
+  const [fundedRiskRatio, setFundedRiskRatio] = useState(50);
+  const [optimalCriterion, setOptimalCriterion] = useState("ev_day");
 
   const [running,  setRunning]  = useState(false);
   const [progress, setProgress] = useState(0);
@@ -745,6 +859,12 @@ function ChallengeSimulator({ firms }) {
         risk_step_pct:        riskStep,
         n_simulations:        nSim,
         max_risk_per_trade_pct: maxRiskPerTrade,
+        cost_challenge:       costChallenge,
+        profit_share:         profitShare / 100,
+        tax_rate:             taxRate / 100,
+        funded_risk_ratio:    fundedRiskRatio / 100,
+        payout_wait_factor:   0.075,
+        optimal_criterion:    optimalCriterion,
       },
     });
   }
@@ -948,6 +1068,43 @@ function ChallengeSimulator({ firms }) {
                 </div>
               ))}
 
+              {/* Criterio di ottimizzazione */}
+              <div style={{ marginTop: "0.75rem", paddingTop: "0.75rem",
+                            borderTop: "1px solid var(--border)" }}>
+                <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em",
+                              color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+                  CRITERIO OTTIMO
+                </div>
+                <select value={optimalCriterion} onChange={e => setOptimalCriterion(e.target.value)}
+                  style={{ width: "100%", padding: "0.35rem 0.5rem", fontSize: 12, marginBottom: "0.5rem",
+                           background: "var(--bg-elevated)", border: "1px solid var(--border)",
+                           borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }}>
+                  <option value="ev_day">Valore atteso / giorno (economico)</option>
+                  <option value="max_prob">Massima probabilità di successo</option>
+                  <option value="balanced">Bilanciato P/√giorni</option>
+                </select>
+
+                {optimalCriterion === "ev_day" && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                    {[
+                      { label: "Costo challenge ($)", val: costChallenge,   set: setCostChallenge },
+                      { label: "Profit share (%)",    val: profitShare,     set: setProfitShare },
+                      { label: "Tasse (%)",           val: taxRate,         set: setTaxRate },
+                      { label: "Riduz. rischio funded (%)", val: fundedRiskRatio, set: setFundedRiskRatio },
+                    ].map(({ label, val, set }) => (
+                      <div key={label} style={{ display: "flex", justifyContent: "space-between",
+                                                alignItems: "center" }}>
+                        <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</span>
+                        <input type="number" value={val} onChange={e => set(parseFloat(e.target.value))}
+                          style={{ width: 80, padding: "0.2rem 0.4rem", fontSize: 12, textAlign: "right",
+                                   background: "var(--bg-elevated)", border: "1px solid var(--border)",
+                                   borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }} />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
               <button
                 onClick={runSimulation}
                 disabled={running || !selId}
@@ -1031,8 +1188,8 @@ function ChallengeSimulator({ firms }) {
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                       <thead>
                         <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                          {["RISCHIO%", "P(SUCC)", "P(DAILY)", "P(TOT DD)", "P(TIMEOUT)",
-                            "GG MEDI", "GG P95", "MAX DD%", ""].map(h => (
+                          {["RISCHIO%", "P(SUCC)", "P(DAILY)", "GG MEDI",
+                            "PAYOUT NET", "EV/GG", "MAX DD%", ""].map(h => (
                             <th key={h} style={{ padding: "0.4rem 0.5rem", textAlign: "right",
                                                fontSize: 10, fontWeight: 600, color: "var(--text-muted)",
                                                whiteSpace: "nowrap" }}>
@@ -1074,19 +1231,16 @@ function ChallengeSimulator({ firms }) {
                               </td>
                               <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
                                            fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>
-                                {(r.p_total_breach * 100).toFixed(1)}%
-                              </td>
-                              <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
-                                           fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>
-                                {(r.p_timeout * 100).toFixed(1)}%
-                              </td>
-                              <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
-                                           fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>
                                 {r.avg_days_success > 0 ? r.avg_days_success : "—"}
                               </td>
                               <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
-                                           fontFamily: "var(--font-data)", color: "var(--text-muted)" }}>
-                                {r.p95_days_success > 0 ? r.p95_days_success : "—"}
+                                           fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>
+                                {r.net_payout != null ? `$${r.net_payout.toLocaleString()}` : "—"}
+                              </td>
+                              <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
+                                           fontFamily: "var(--font-data)", fontWeight: 600,
+                                           color: r.ev_per_day > 0 ? "var(--accent)" : "var(--danger)" }}>
+                                {r.ev_per_day != null ? `$${r.ev_per_day.toFixed(0)}` : "—"}
                               </td>
                               <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
                                            fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>
