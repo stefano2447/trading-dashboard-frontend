@@ -1016,9 +1016,9 @@ function ChallengeSimulator({ firms }) {
                                background: "var(--bg-elevated)", border: "1px solid var(--border)",
                                borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }}>
                       <option value="">— portafoglio —</option>
-                      {(btData.portfolio_collections[selColl] || []).slice(0, 50).map((p, i) => (
+                      {(btData.portfolio_collections[selColl] || []).map((p, i) => (
                         <option key={i} value={i}>
-                          #{i+1} {p.name.replace("Portfolio ", "P")} — Score {fmt(p.composite_score, 3)}
+                          #{i+1} {p.name.replace("Portfolio ", "P")} — Score {fmt(p.composite_score, 3)} · Recency {fmt(p.portfolio_recency, 2)}x · DOS {fmt(p.avg_dos, 3)}
                         </option>
                       ))}
                     </select>
