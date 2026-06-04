@@ -32,14 +32,31 @@ function calmarType(v) {
   return "negative";
 }
 
+function recencyColor(v) {
+  if (v == null) return "var(--text-muted)";
+  if (v >= 1.2) return "var(--accent)";      // sopra storico del 20%+
+  if (v >= 0.7) return "var(--text-primary)"; // in linea
+  if (v >= 0.3) return "var(--warning)";      // deterioramento parziale
+  return "var(--danger)";                     // deterioramento severo
+}
+
+function recencyLabel(v) {
+  if (v == null) return "—";
+  if (v >= 1.2) return "↑";   // meglio dello storico
+  if (v >= 0.7) return "→";   // in linea
+  if (v >= 0.3) return "↓";   // deteriorato
+  return "↓↓";                // fortemente deteriorato
+}
+
 // ─── Tabella portafogli ───────────────────────────────────────────────────────
 
 function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
   const [sortKey, setSortKey]   = useState("composite_score");
   const [sortDir, setSortDir]   = useState("desc");
-  const [filterMinCalmar, setFilterMinCalmar] = useState("");
-  const [filterMaxDos,    setFilterMaxDos]    = useState("");
-  const [filterNea,       setFilterNea]       = useState("");
+  const [filterMinCalmar,  setFilterMinCalmar]  = useState("");
+  const [filterMaxDos,     setFilterMaxDos]     = useState("");
+  const [filterNea,        setFilterNea]        = useState("");
+  const [filterMinRecency, setFilterMinRecency] = useState("");
 
   function toggleSort(key) {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -47,9 +64,10 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
   }
 
   const filtered = portfolios
-    .filter(p => !filterMinCalmar || p.calmar >= parseFloat(filterMinCalmar))
-    .filter(p => !filterMaxDos    || p.avg_dos <= parseFloat(filterMaxDos))
-    .filter(p => !filterNea       || p.ea_list.length === parseInt(filterNea));
+    .filter(p => !filterMinCalmar  || p.calmar >= parseFloat(filterMinCalmar))
+    .filter(p => !filterMaxDos     || p.avg_dos <= parseFloat(filterMaxDos))
+    .filter(p => !filterNea        || p.ea_list.length === parseInt(filterNea))
+    .filter(p => !filterMinRecency || (p.portfolio_recency ?? 0) >= parseFloat(filterMinRecency));
 
   const sorted = [...filtered].sort((a, b) => {
     const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
@@ -80,7 +98,8 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
         {[
           { label: "Calmar min", val: filterMinCalmar, set: setFilterMinCalmar, ph: "es. 2.5" },
           { label: "DOS max",    val: filterMaxDos,    set: setFilterMaxDos,    ph: "es. 0.3" },
-          { label: "N° EA",      val: filterNea,       set: setFilterNea,       ph: "es. 3"   },
+          { label: "N° EA",        val: filterNea,        set: setFilterNea,        ph: "es. 3"   },
+          { label: "Recency min",  val: filterMinRecency, set: setFilterMinRecency, ph: "es. 0.8" },
         ].map(({ label, val, set, ph }) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
             <span style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{label}</span>
@@ -113,6 +132,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
               {th("MAX DD%", "max_dd_pct")}
               {th("AVG DOS", "avg_dos")}
               {th("MAX DOS", "max_dos")}
+              {th("RECENCY", "portfolio_recency")}
               {th("SCORE",   "composite_score")}
               <th style={{ padding: "0.5rem 0.75rem", fontSize: 11, color: "var(--text-muted)" }}>
                 EA
@@ -173,8 +193,23 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                                color: dosColor(p.max_dos) }}>
                     {fmt(p.max_dos, 3)}
                   </td>
-                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)",
-                               fontWeight: 600, color: "var(--accent)" }}>
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)" }}>
+                    <span
+                      title={p.portfolio_recency != null
+                        ? "Calmar recente / Calmar storico = " + fmt(p.portfolio_recency, 2) + "x — " + (
+                            p.portfolio_recency >= 1.2 ? "performance recente sopra la media storica" :
+                            p.portfolio_recency >= 0.7 ? "in linea con lo storico" :
+                            p.portfolio_recency >= 0.3 ? "deterioramento parziale" : "deterioramento severo")
+                        : "Dati non disponibili — rigenera il JSON"}
+                      style={{ cursor: "help", color: recencyColor(p.portfolio_recency) }}>
+                      {p.portfolio_recency != null
+                        ? fmt(p.portfolio_recency, 2) + "x " + recencyLabel(p.portfolio_recency)
+                        : "—"}
+                    </span>
+                  </td>
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)", fontWeight: 600, color: "var(--accent)" }}>
                     {fmt(p.composite_score, 3)}
                   </td>
                   <td style={{ padding: "0.5rem 0.75rem" }}>
@@ -229,8 +264,18 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
         </div>
         <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
           <Badge value={`Calmar ${fmt(portfolio.calmar)}`}  type={calmarType(portfolio.calmar)} />
-          <Badge value={`DOS ${fmt(portfolio.avg_dos, 3)}`} type={portfolio.avg_dos < 0.2 ? "positive" : portfolio.avg_dos < 0.4 ? "warning" : "negative"} />
-          <Badge value={`MaxDD ${fmt(portfolio.max_dd_pct)}%`} type={portfolio.max_dd_pct > 15 ? "negative" : "warning"} />
+          <Badge value={"DOS " + fmt(portfolio.avg_dos, 3)} type={portfolio.avg_dos < 0.2 ? "positive" : portfolio.avg_dos < 0.4 ? "warning" : "negative"} />
+          <Badge value={"MaxDD " + fmt(portfolio.max_dd_pct) + "%"} type={portfolio.max_dd_pct > 15 ? "negative" : "warning"} />
+          {portfolio.portfolio_recency != null && (
+            <span
+              title={"Calmar recente / storico = " + fmt(portfolio.portfolio_recency, 2) + "x (ultimi 90gg)"}
+              style={{ cursor: "help" }}>
+              <Badge
+                value={"Recency " + fmt(portfolio.portfolio_recency, 2) + "x"}
+                type={portfolio.portfolio_recency >= 1.2 ? "positive" : portfolio.portfolio_recency >= 0.7 ? "neutral" : "negative"}
+              />
+            </span>
+          )}
         </div>
       </div>
 
