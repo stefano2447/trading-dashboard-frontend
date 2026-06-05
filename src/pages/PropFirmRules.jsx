@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Edit2, Check, X, ChevronDown, ChevronUp,
          Play, TrendingUp, AlertTriangle, Target } from "lucide-react";
-import { api } from "../api/client";
+import { api } from "../services/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -405,9 +405,244 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
   return totalProfit / nSims;  // profitto medio lordo
 }
 
+
+// ─── Simulatore Conto Reale ───────────────────────────────────────────────────
+function runRealAccountSimulation(eaComponents, params, riskPct) {
+  // Costruisce la serie dei P&L giornalieri in % del capitale backtest
+  // per ogni EA, poi li combina con cap per-EA.
+  // Con compound=true, ogni giorno il P&L scala con il balance corrente.
+
+  const minLen = Math.min(...eaComponents.map(c => c.daily_pnl_dollar.length));
+
+  // Combina i P&L in % (non in $) per supportare il compound
+  // Ogni EA contribuisce con i suoi daily_pnl_pct / initial_capital * initial_capital
+  // → di fatto daily_pnl_pct è già in % del capitale backtest
+
+  // 1. Calcola scale_factor base (come per challenge)
+  const rawCombined = new Array(minLen).fill(0);
+  for (const c of eaComponents) {
+    const arr = c.daily_pnl_dollar;
+    for (let i = 0; i < minLen; i++) rawCombined[i] += arr[arr.length - minLen + i];
+  }
+  const losses = rawCombined.filter(x => x < 0);
+  if (!losses.length) return null;
+
+  const avgLoss          = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
+  const riskTargetDollar = params.ra_capital * riskPct / 100.0;
+  const scaleFactorBase  = avgLoss > 0 ? riskTargetDollar / avgLoss : 1.0;
+
+  // 2. Per ogni EA, applica cap per-EA e calcola serie in % del capitale iniziale
+  // Con compound, questa % viene applicata al balance corrente ogni giorno
+  const maxRiskDollar = params.ra_capital * (params.max_risk_per_trade_pct || 2.0) / 100.0;
+  const eaSeries = [];  // array di serie in % (non in $)
+
+  for (const comp of eaComponents) {
+    const sizing = comp.lot_sizing_type || "fixed_lots";
+    let riskPerTradeScaled;
+    if (sizing === "sqx_fixed_money") {
+      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
+      riskPerTradeScaled = mmBase * scaleFactorBase;
+    } else {
+      const p90Pct = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 0;
+      riskPerTradeScaled = (p90Pct / 100.0) * comp.initial_capital * scaleFactorBase;
+    }
+    let sfEA = scaleFactorBase;
+    if (riskPerTradeScaled > maxRiskDollar && riskPerTradeScaled > 0) {
+      sfEA = scaleFactorBase * (maxRiskDollar / riskPerTradeScaled);
+    }
+
+    // Serie in % del capitale backtest, scalata
+    const arr = comp.daily_pnl_dollar;
+    const pctSeries = new Array(minLen);
+    for (let i = 0; i < minLen; i++) {
+      pctSeries[i] = arr[arr.length - minLen + i] / comp.initial_capital * sfEA;
+    }
+    eaSeries.push(pctSeries);
+  }
+
+  // 3. Serie combinata in % (somma delle % di ogni EA)
+  const combinedPct = new Array(minLen).fill(0);
+  for (const s of eaSeries) {
+    for (let i = 0; i < minLen; i++) combinedPct[i] += s[i];
+  }
+
+  // Orizzonti temporali in giorni
+  const horizons = [
+    { label: "1m",  days: 30 },
+    { label: "3m",  days: 91 },
+    { label: "6m",  days: 182 },
+    { label: "12m", days: 365 },
+  ];
+  if (params.ra_custom_days && params.ra_custom_days > 0) {
+    horizons.push({ label: "custom", days: params.ra_custom_days });
+  }
+
+  const maxHorizonDays = Math.max(...horizons.map(h => h.days));
+  const ruinThreshold  = params.ra_ruin_pct / 100.0;     // es. 0.60
+  const dd30Threshold  = 0.30;
+  const compound       = params.ra_compound !== false;    // default true
+  const nSims          = params.n_simulations;
+
+  const rand = mulberry32(12345);
+
+  // Risultati per orizzonte: array di balance finali
+  const horizonResults = {};
+  for (const h of horizons) horizonResults[h.label] = [];
+
+  let nRuined = 0;
+  let nDD30   = 0;
+  const maxDDList = [];
+
+  for (let s = 0; s < nSims; s++) {
+    let balance    = params.ra_capital;
+    let peakBalance = balance;
+    let ruined     = false;
+    let hitDD30    = false;
+    const snapshots = {};  // giorno → balance
+
+    for (let day = 1; day <= maxHorizonDays; day++) {
+      if (ruined) break;
+
+      // Campiona un giorno dalla storia
+      const idx    = Math.floor(rand() * combinedPct.length);
+      const pctDay = combinedPct[idx];
+
+      if (pctDay !== 0) {
+        let pnlDay;
+        if (compound) {
+          // Con compound: P&L scala col balance corrente
+          pnlDay = pctDay * balance;
+        } else {
+          // Senza compound: P&L fisso in $ (scala col capitale iniziale)
+          pnlDay = pctDay * params.ra_capital;
+        }
+
+        balance += pnlDay;
+        if (balance < 0) balance = 0;
+        if (balance > peakBalance) peakBalance = balance;
+
+        const currentDD = (peakBalance - balance) / peakBalance;
+        if (currentDD > dd30Threshold) hitDD30 = true;
+        if (currentDD >= ruinThreshold) {
+          ruined = true;
+          balance = params.ra_capital * (1 - ruinThreshold);
+        }
+      }
+
+      // Snapshot agli orizzonti
+      for (const h of horizons) {
+        if (day === h.days) snapshots[h.label] = balance;
+      }
+    }
+
+    // Se la simulazione finisce prima dell'orizzonte (es. ruin prima di 12m)
+    for (const h of horizons) {
+      if (snapshots[h.label] === undefined) {
+        snapshots[h.label] = balance;
+      }
+      horizonResults[h.label].push(snapshots[h.label]);
+    }
+
+    if (ruined) nRuined++;
+    if (hitDD30) nDD30++;
+    if (peakBalance > 0) {
+      maxDDList.push((peakBalance - balance) / peakBalance * 100);
+    }
+  }
+
+  // Calcola statistiche per ogni orizzonte
+  const horizonStats = {};
+  for (const h of horizons) {
+    const balances = horizonResults[h.label].sort((a,b) => a-b);
+    const n        = balances.length;
+    const mean     = balances.reduce((a,b)=>a+b,0) / n;
+    const p5       = balances[Math.floor(n * 0.05)];
+    const p50      = balances[Math.floor(n * 0.50)];
+    const p95      = balances[Math.floor(n * 0.95)];
+
+    // Rendimento % rispetto al capitale iniziale
+    const toReturn = b => ((b - params.ra_capital) / params.ra_capital * 100);
+
+    horizonStats[h.label] = {
+      days:       h.days,
+      mean_bal:   Math.round(mean),
+      p5_bal:     Math.round(p5),
+      p50_bal:    Math.round(p50),
+      p95_bal:    Math.round(p95),
+      mean_ret:   Math.round(toReturn(mean)  * 10) / 10,
+      p5_ret:     Math.round(toReturn(p5)    * 10) / 10,
+      p50_ret:    Math.round(toReturn(p50)   * 10) / 10,
+      p95_ret:    Math.round(toReturn(p95)   * 10) / 10,
+    };
+  }
+
+  const sortedDD = maxDDList.sort((a,b)=>a-b);
+  const n        = sortedDD.length;
+
+  return {
+    risk_pct:       riskPct,
+    p_ruin:         Math.round(nRuined / nSims * 10000) / 10000,
+    p_dd30:         Math.round(nDD30   / nSims * 10000) / 10000,
+    avg_max_dd:     Math.round(sortedDD.reduce((a,b)=>a+b,0)/n * 10) / 10,
+    p95_max_dd:     Math.round(sortedDD[Math.floor(n*0.95)] * 10) / 10,
+    horizons:       horizonStats,
+    compound:       compound,
+  };
+}
+
 // ─── Entry point del Worker ───────────────────────────────────────────────────
 self.onmessage = function(e) {
   const { daily_pnl_dollar, ea_components, params } = e.data;
+
+  // ── Simulatore Conto Reale ─────────────────────────────────────────────────
+  if (params.sim_type === "real_account") {
+    const riskLevels = [];
+    let r = params.risk_min_pct;
+    while (r <= params.risk_max_pct + 1e-9) {
+      riskLevels.push(Math.round(r * 10000) / 10000);
+      r += params.risk_step_pct;
+    }
+
+    const results = [];
+    for (let i = 0; i < riskLevels.length; i++) {
+      const res = runRealAccountSimulation(ea_components, params, riskLevels[i]);
+      if (res) results.push(res);
+      self.postMessage({ type: "progress", pct: Math.round((i+1)/riskLevels.length*100) });
+    }
+
+    // Ottimale per conto reale: max Sharpe simulato a 6 mesi
+    // = rendimento_medio / std_rendimenti tra simulazioni
+    // Approssimazione: massimizza P95_ret / (-P5_ret + 1) → bilancia upside e downside
+    let bestIdx = 0, bestScore = -1e9;
+    const horizon6m = "6m";
+    for (let i = 0; i < results.length; i++) {
+      const h = results[i].horizons[horizon6m] || results[i].horizons["custom"];
+      if (!h) continue;
+      const p_ruin = results[i].p_ruin;
+      // Score: rendimento medio pesato per bassa probabilità di rovina
+      const score = h.mean_ret * (1 - p_ruin * 3);
+      if (score > bestScore) { bestScore = score; bestIdx = i; }
+    }
+
+    const nActive   = daily_pnl_dollar.filter(x => x !== 0).length;
+    const nCalendar = daily_pnl_dollar.length;
+
+    self.postMessage({
+      type: "result",
+      data: {
+        sim_type:          "real_account",
+        results,
+        optimal_risk_pct:  results[bestIdx]?.risk_pct ?? null,
+        n_trading_days:    nActive,
+        n_calendar_days:   nCalendar,
+        avg_trades_freq:   Math.round(nActive / nCalendar * 1000) / 10,
+        n_simulations:     params.n_simulations,
+      }
+    });
+    return;
+  }
+
+  // ── Simulatore Challenge (codice esistente) ────────────────────────────────
 
   // Range di rischio
   const riskLevels = [];
@@ -1461,9 +1696,415 @@ function ChallengeSimulator({ firms }) {
 //  COMPONENTE PRINCIPALE
 // ══════════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════════
+//  SIMULATORE CONTO REALE
+// ══════════════════════════════════════════════════════════════════════════════
+function RealAccountSimulator() {
+  const [btData,   setBtData]   = useState(null);
+  const [loading,  setLoading]  = useState(true);
+
+  const [selType,  setSelType]  = useState("ea");
+  const [selId,    setSelId]    = useState("");
+  const [selColl,  setSelColl]  = useState("");
+
+  // Parametri simulazione
+  const [capital,   setCapital]   = useState(10000);
+  const [riskMin,   setRiskMin]   = useState(0.5);
+  const [riskMax,   setRiskMax]   = useState(3.0);
+  const [riskStep,  setRiskStep]  = useState(0.25);
+  const [nSim,      setNSim]      = useState(3000);
+  const [compound,  setCompound]  = useState(true);
+  const [ruinPct,   setRuinPct]   = useState(60);
+  const [maxRiskPerTrade, setMaxRiskPerTrade] = useState(2.0);
+  const [customDays, setCustomDays] = useState(180);
+  const [showCustom, setShowCustom] = useState(false);
+
+  const [running,  setRunning]  = useState(false);
+  const [progress, setProgress] = useState(0);
+  const [results,  setResults]  = useState(null);
+  const [simError, setSimError] = useState(null);
+  const workerRef = useRef(null);
+
+  useEffect(() => {
+    api.getBacktestData()
+      .then(d => setBtData(d))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  function buildDailyPnlDollar() {
+    const eaPool = btData?.ea_pool || {};
+    if (selType === "ea") {
+      const ea = eaPool[selId];
+      if (!ea?.daily_pnl_pct) return null;
+      const initial = ea.initial_capital || 100000;
+      const dailyDollar = ea.daily_pnl_pct.map(p => p / 100.0 * initial);
+      return {
+        dailyDollar,
+        components: [{
+          ea_name: selId, initial_capital: initial,
+          base_lots: ea.base_lots || 0.01, lot_sizing_type: ea.lot_sizing_type || "fixed_lots",
+          defaultprice: ea.defaultprice || 0, mm_risked_money: ea.mm_risked_money || 0,
+          ref_price: ea.ref_price || 0, ref_lots: ea.ref_lots || ea.base_lots || 0.01,
+          max_single_trade_loss_pct: ea.max_single_trade_loss_pct || 0,
+          p90_single_trade_loss_pct: ea.p90_single_trade_loss_pct || 0,
+          daily_pnl_dollar: dailyDollar,
+        }]
+      };
+    }
+    const collection = btData?.portfolio_collections?.[selColl] || [];
+    const portfolio  = collection[parseInt(selId)];
+    if (!portfolio) return null;
+    const eaPool2    = btData?.ea_pool || {};
+    const components = [];
+    const allSeries  = [];
+    for (const eaName of portfolio.ea_list) {
+      const ea = eaPool2[eaName];
+      if (!ea?.daily_pnl_pct) continue;
+      const initial     = ea.initial_capital || 100000;
+      const dailyDollar = ea.daily_pnl_pct.map(p => p / 100.0 * initial);
+      components.push({
+        ea_name: eaName, initial_capital: initial,
+        base_lots: ea.base_lots || 0.01, lot_sizing_type: ea.lot_sizing_type || "fixed_lots",
+        defaultprice: ea.defaultprice || 0, mm_risked_money: ea.mm_risked_money || 0,
+        ref_price: ea.ref_price || 0, ref_lots: ea.ref_lots || ea.base_lots || 0.01,
+        max_single_trade_loss_pct: ea.max_single_trade_loss_pct || 0,
+        p90_single_trade_loss_pct: ea.p90_single_trade_loss_pct || 0,
+        daily_pnl_dollar: dailyDollar,
+      });
+      allSeries.push(dailyDollar);
+    }
+    if (!allSeries.length) return null;
+    const minLen   = Math.min(...allSeries.map(s => s.length));
+    const combined = new Array(minLen).fill(0);
+    for (const s of allSeries) for (let i=0;i<minLen;i++) combined[i]+=s[s.length-minLen+i];
+    for (const c of components) c.daily_pnl_dollar = c.daily_pnl_dollar.slice(-minLen);
+    return { dailyDollar: combined, components };
+  }
+
+  function runSimulation() {
+    const built = buildDailyPnlDollar();
+    if (!built) { setSimError("Dati non disponibili. Rigenera il JSON."); return; }
+    if (workerRef.current) workerRef.current.terminate();
+    setRunning(true); setProgress(0); setSimError(null); setResults(null);
+    const worker = createMonteCarloWorker();
+    workerRef.current = worker;
+    worker.onmessage = e => {
+      if (e.data.type === "progress") setProgress(e.data.pct);
+      else if (e.data.type === "result") {
+        setResults(e.data.data); setRunning(false); setProgress(100);
+        worker.terminate(); workerRef.current = null;
+      }
+    };
+    worker.onerror = err => {
+      setSimError(err.message || "Errore Worker");
+      setRunning(false); worker.terminate(); workerRef.current = null;
+    };
+    worker.postMessage({
+      daily_pnl_dollar: built.dailyDollar,
+      ea_components:    built.components,
+      params: {
+        sim_type:       "real_account",
+        ra_capital:     capital,
+        ra_compound:    compound,
+        ra_ruin_pct:    ruinPct,
+        ra_custom_days: showCustom ? customDays : 0,
+        risk_min_pct:   riskMin,
+        risk_max_pct:   riskMax,
+        risk_step_pct:  riskStep,
+        n_simulations:  nSim,
+        max_risk_per_trade_pct: maxRiskPerTrade,
+      }
+    });
+  }
+
+  const eaNames   = Object.keys(btData?.ea_pool || {});
+  const collNames = Object.keys(btData?.portfolio_collections || {});
+  const optimal   = results?.optimal_risk_pct;
+
+  // Orizzonti da mostrare
+  const horizonKeys = ["1m", "3m", "6m", "12m", ...(showCustom ? ["custom"] : [])];
+  const horizonLabel = { "1m": "1 mese", "3m": "3 mesi", "6m": "6 mesi", "12m": "12 mesi", "custom": `${customDays}gg` };
+
+  return (
+    <div>
+      {loading && <Spinner />}
+      {!loading && !btData?.ea_pool && (
+        <div style={{ padding: "2rem", border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)",
+                      textAlign: "center", color: "var(--text-muted)", fontSize: 13 }}>
+          Nessun dato backtest. Esegui <code>analyzer.py</code> prima.
+        </div>
+      )}
+      {!loading && btData?.ea_pool && (
+        <div style={{ display: "grid", gridTemplateColumns: "300px 1fr", gap: "1.5rem" }}>
+
+          {/* ── Input ─────────────────────────────────────────────── */}
+          <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+
+            {/* Selezione */}
+            <Card>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em",
+                            color: "var(--text-muted)", marginBottom: "0.75rem" }}>STRATEGIA</div>
+              <div style={{ display: "flex", gap: "0.4rem", marginBottom: "0.75rem" }}>
+                {["ea", "portfolio"].map(t => (
+                  <button key={t} onClick={() => { setSelType(t); setSelId(""); }}
+                    style={{ flex: 1, padding: "0.3rem", fontSize: 12, borderRadius: "var(--radius-sm)",
+                             border: `1px solid ${selType===t?"var(--accent)":"var(--border)"}`,
+                             background: selType===t?"var(--accent-dim)":"var(--bg-elevated)",
+                             color: selType===t?"var(--accent)":"var(--text-secondary)", cursor: "pointer" }}>
+                    {t === "ea" ? "Singolo EA" : "Portafoglio"}
+                  </button>
+                ))}
+              </div>
+              {selType === "ea" ? (
+                <select value={selId} onChange={e => setSelId(e.target.value)}
+                  style={{ width: "100%", padding: "0.4rem", fontSize: 13, background: "var(--bg-elevated)",
+                           border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }}>
+                  <option value="">— seleziona EA —</option>
+                  {eaNames.map(n => <option key={n} value={n}>{n}</option>)}
+                </select>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+                  <select value={selColl} onChange={e => { setSelColl(e.target.value); setSelId(""); }}
+                    style={{ width: "100%", padding: "0.4rem", fontSize: 13, background: "var(--bg-elevated)",
+                             border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }}>
+                    <option value="">— collezione —</option>
+                    {collNames.map(n => <option key={n} value={n}>{n}</option>)}
+                  </select>
+                  {selColl && (
+                    <select value={selId} onChange={e => setSelId(e.target.value)}
+                      style={{ width: "100%", padding: "0.4rem", fontSize: 12, background: "var(--bg-elevated)",
+                               border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }}>
+                      <option value="">— portafoglio —</option>
+                      {(btData.portfolio_collections[selColl]||[]).map((p,i) => (
+                        <option key={i} value={i}>
+                          #{i+1} {p.name.replace("Portfolio ","P")} · Rec {fmt(p.portfolio_recency,2)}x · DOS {fmt(p.avg_dos,3)}
+                        </option>
+                      ))}
+                    </select>
+                  )}
+                </div>
+              )}
+            </Card>
+
+            {/* Parametri conto */}
+            <Card>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em",
+                            color: "var(--text-muted)", marginBottom: "0.75rem" }}>PARAMETRI CONTO</div>
+              {[
+                { label: "Capitale ($)",          val: capital,         set: setCapital },
+                { label: "Max rischio/trade (%)",  val: maxRiskPerTrade, set: setMaxRiskPerTrade },
+                { label: "Soglia rovina (%)",       val: ruinPct,         set: setRuinPct },
+              ].map(({label,val,set}) => (
+                <div key={label} style={{ display:"flex", justifyContent:"space-between",
+                                          alignItems:"center", marginBottom:"0.5rem" }}>
+                  <span style={{ fontSize:12, color:"var(--text-muted)" }}>{label}</span>
+                  <input type="number" value={val} onChange={e=>set(parseFloat(e.target.value))}
+                    style={{ width:90, padding:"0.2rem 0.4rem", fontSize:12, textAlign:"right",
+                             background:"var(--bg-elevated)", border:"1px solid var(--border)",
+                             borderRadius:"var(--radius-sm)", color:"var(--text-primary)" }}/>
+                </div>
+              ))}
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.5rem" }}>
+                <span style={{ fontSize:12, color:"var(--text-muted)" }}>Compound (lotti crescono)</span>
+                <input type="checkbox" checked={compound} onChange={e=>setCompound(e.target.checked)}/>
+              </div>
+            </Card>
+
+            {/* Orizzonti e rischio */}
+            <Card>
+              <div style={{ fontSize:11, fontWeight:600, letterSpacing:"0.07em",
+                            color:"var(--text-muted)", marginBottom:"0.75rem" }}>ORIZZONTI E RISCHIO</div>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.5rem" }}>
+                <span style={{ fontSize:12, color:"var(--text-muted)" }}>Periodo custom</span>
+                <input type="checkbox" checked={showCustom} onChange={e=>setShowCustom(e.target.checked)}/>
+              </div>
+              {showCustom && (
+                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.5rem" }}>
+                  <span style={{ fontSize:12, color:"var(--text-muted)" }}>Giorni (30-1095)</span>
+                  <input type="number" value={customDays} min={30} max={1095}
+                    onChange={e=>setCustomDays(parseInt(e.target.value))}
+                    style={{ width:90, padding:"0.2rem 0.4rem", fontSize:12, textAlign:"right",
+                             background:"var(--bg-elevated)", border:"1px solid var(--border)",
+                             borderRadius:"var(--radius-sm)", color:"var(--text-primary)" }}/>
+                </div>
+              )}
+              {[
+                { label: "Rischio min (%)", val: riskMin,  set: setRiskMin },
+                { label: "Rischio max (%)", val: riskMax,  set: setRiskMax },
+                { label: "Step (%)",        val: riskStep, set: setRiskStep },
+                { label: "Simulazioni",     val: nSim,     set: setNSim },
+              ].map(({label,val,set}) => (
+                <div key={label} style={{ display:"flex", justifyContent:"space-between",
+                                          alignItems:"center", marginBottom:"0.5rem" }}>
+                  <span style={{ fontSize:12, color:"var(--text-muted)" }}>{label}</span>
+                  <input type="number" value={val} onChange={e=>set(parseFloat(e.target.value))}
+                    style={{ width:90, padding:"0.2rem 0.4rem", fontSize:12, textAlign:"right",
+                             background:"var(--bg-elevated)", border:"1px solid var(--border)",
+                             borderRadius:"var(--radius-sm)", color:"var(--text-primary)" }}/>
+                </div>
+              ))}
+              <button onClick={runSimulation} disabled={running||!selId}
+                style={{ width:"100%", marginTop:"0.75rem", padding:"0.6rem", fontSize:13, fontWeight:600,
+                         background: running||!selId?"var(--bg-elevated)":"var(--accent-dim)",
+                         border:`1px solid ${running||!selId?"var(--border)":"var(--accent)"}`,
+                         color: running||!selId?"var(--text-muted)":"var(--accent)",
+                         borderRadius:"var(--radius-md)", cursor:running||!selId?"default":"pointer",
+                         display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+                {running
+                  ? <><div style={{ width:14,height:14,border:"2px solid var(--border)",borderTop:"2px solid var(--accent)",
+                                    borderRadius:"50%",animation:"spin 0.8s linear infinite" }}/>
+                      Simulazione… {progress}%</>
+                  : <><Play size={14}/> Avvia simulazione (locale)</>}
+              </button>
+              {running && (
+                <div style={{ marginTop:"0.4rem",height:4,background:"var(--bg-elevated)",borderRadius:2,overflow:"hidden" }}>
+                  <div style={{ height:"100%",width:`${progress}%`,background:"var(--accent)",transition:"width 0.3s",borderRadius:2 }}/>
+                </div>
+              )}
+              {simError && (
+                <div style={{ marginTop:"0.5rem",padding:"0.5rem",fontSize:12,
+                              color:"var(--danger)",background:"var(--danger-dim)",borderRadius:"var(--radius-sm)" }}>
+                  {simError}
+                </div>
+              )}
+            </Card>
+          </div>
+
+          {/* ── Output ────────────────────────────────────────────── */}
+          <div>
+            {!results && !running && (
+              <div style={{ height:"100%",minHeight:300,display:"flex",alignItems:"center",justifyContent:"center",
+                            border:"1px dashed var(--border)",borderRadius:"var(--radius-lg)",
+                            color:"var(--text-muted)",fontSize:13 }}>
+                Configura i parametri e avvia la simulazione
+              </div>
+            )}
+
+            {results && (
+              <div style={{ display:"flex",flexDirection:"column",gap:"1rem" }}>
+
+                {/* KPI ottimale */}
+                {optimal && (() => {
+                  const opt = results.results.find(r => r.risk_pct === optimal) || {};
+                  const h6  = opt.horizons?.["6m"] || opt.horizons?.["custom"] || {};
+                  return (
+                    <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"0.75rem" }}>
+                      {[
+                        { label:"Rischio Ottimale", value:`${optimal}%`,             type:"positive" },
+                        { label:`Rendimento 6m medio`, value:`${h6.mean_ret ?? "—"}%`, type: h6.mean_ret>0?"positive":"negative" },
+                        { label:`Rendimento 6m P95`,  value:`${h6.p95_ret ?? "—"}%`,  type:"positive" },
+                        { label:"P(Rovina)",           value:`${((opt.p_ruin||0)*100).toFixed(1)}%`,
+                          type: opt.p_ruin < 0.05?"positive":opt.p_ruin<0.15?"warning":"negative" },
+                      ].map(({label,value,type}) => (
+                        <Card key={label}>
+                          <div style={{ fontSize:11,color:"var(--text-muted)",marginBottom:4 }}>{label}</div>
+                          <Badge value={value} type={type}/>
+                        </Card>
+                      ))}
+                    </div>
+                  );
+                })()}
+
+                {/* Tabella per orizzonte temporale */}
+                {horizonKeys.map(hk => {
+                  const hLabel = horizonLabel[hk];
+                  return (
+                    <Card key={hk}>
+                      <div style={{ fontSize:11,fontWeight:600,letterSpacing:"0.07em",
+                                    color:"var(--text-muted)",marginBottom:"0.75rem" }}>
+                        RENDIMENTO A {hLabel.toUpperCase()} — {compound?"CON COMPOUND":"SENZA COMPOUND"}
+                      </div>
+                      <div style={{ overflowX:"auto" }}>
+                        <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12 }}>
+                          <thead>
+                            <tr style={{ borderBottom:"1px solid var(--border)" }}>
+                              {["RISCHIO%","BAL.MEDIO","RET.MEDIO","RET.P5(worst)","RET.P50","RET.P95(best)","P(ROVINA)","P(DD>30%)","★"].map(h=>(
+                                <th key={h} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
+                                                     fontWeight:600,color:"var(--text-muted)",whiteSpace:"nowrap" }}>
+                                  {h}
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {results.results.map(r => {
+                              const h      = r.horizons?.[hk];
+                              if (!h) return null;
+                              const isOpt  = r.risk_pct === optimal;
+                              const p_ruin = r.p_ruin || 0;
+                              return (
+                                <tr key={r.risk_pct}
+                                  style={{ background:isOpt?"var(--accent-dim)":"transparent",
+                                           borderLeft:isOpt?"2px solid var(--accent)":"2px solid transparent",
+                                           borderBottom:"1px solid var(--border)" }}>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                               fontWeight:isOpt?700:400,color:isOpt?"var(--accent)":"var(--text-primary)" }}>
+                                    {r.risk_pct}%
+                                  </td>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                               color:"var(--text-secondary)" }}>
+                                    ${h.mean_bal.toLocaleString()}
+                                  </td>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                               color:h.mean_ret>0?"var(--accent)":"var(--danger)",fontWeight:600 }}>
+                                    {h.mean_ret}%
+                                  </td>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                               color:h.p5_ret>0?"var(--text-secondary)":"var(--danger)" }}>
+                                    {h.p5_ret}%
+                                  </td>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                               color:"var(--text-secondary)" }}>
+                                    {h.p50_ret}%
+                                  </td>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                               color:"var(--accent)" }}>
+                                    {h.p95_ret}%
+                                  </td>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                               color:p_ruin<0.05?"var(--accent)":p_ruin<0.15?"var(--warning)":"var(--danger)" }}>
+                                    {(p_ruin*100).toFixed(1)}%
+                                  </td>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                               color:(r.p_dd30||0)<0.2?"var(--text-secondary)":"var(--warning)" }}>
+                                    {((r.p_dd30||0)*100).toFixed(1)}%
+                                  </td>
+                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"center",fontSize:11,
+                                               color:"var(--accent)" }}>
+                                    {isOpt?"★":""}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </Card>
+                  );
+                })}
+
+                <div style={{ fontSize:11,color:"var(--text-muted)" }}>
+                  {results.n_simulations.toLocaleString()} simulazioni ·
+                  {results.n_trading_days} giorni con trade su {results.n_calendar_days} totali
+                  ({results.avg_trades_freq}% frequenza) ·
+                  Ottimale = max rendimento medio × (1 - P(rovina)×3)
+                  {compound ? " · Compound attivo" : " · Lotti fissi"}
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 const TABS = [
   { id: "regole",    label: "Regole Prop Firm" },
   { id: "simulator", label: "Challenge Simulator" },
+  { id: "real",      label: "Simulatore Conto Reale" },
 ];
 
 export function PropFirmRules() {
@@ -1623,6 +2264,11 @@ export function PropFirmRules() {
       {/* ── Tab Challenge Simulator ──────────────────────────── */}
       {activeTab === "simulator" && (
         <ChallengeSimulator firms={firms} />
+      )}
+
+      {/* ── Tab Simulatore Conto Reale ───────────────────────── */}
+      {activeTab === "real" && (
+        <RealAccountSimulator />
       )}
     </div>
   );
