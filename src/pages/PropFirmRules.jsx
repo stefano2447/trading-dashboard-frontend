@@ -609,11 +609,15 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
       const p90Dollar = (p90Pct / 100.0) * comp.initial_capital;
       factor = p90Dollar > 0 ? riskDollar / p90Dollar : 1.0;
     }
-    // Serie in % del capitale iniziale (per applicare compound)
+    // Serie in % del capitale REALE (per applicare compound correttamente).
+    // Logica: pnlDay = pctSeries × balance_corrente
+    // Al giorno 0 (balance = ra_capital) deve dare lo stesso risultato dei lotti fissi:
+    //   pnlDay_0 = arr × factor / ra_capital × ra_capital = arr × factor ✓
+    // Con compound (balance > ra_capital): pnlDay > lotti fissi ✓
     const arr = comp.daily_pnl_dollar;
     const pctSeries = new Array(minLen);
     for (let i = 0; i < minLen; i++) {
-      pctSeries[i] = (arr[arr.length - minLen + i] / comp.initial_capital) * factor;
+      pctSeries[i] = (arr[arr.length - minLen + i] * factor) / params.ra_capital;
     }
     eaSeries.push(pctSeries);
   }
