@@ -497,10 +497,14 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
           balance += pnlDay;
           if (balance < 0) balance = 0;
           if (balance > peakBalance) peakBalance = balance;
-          const dd = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
-          if (dd > dd30Threshold) hitDD30 = true;
-          if (dd >= ruinThreshold) {
-            ruined = true;
+          // DD dal picco (per P(DD>30%))
+          const ddPeak = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
+          if (ddPeak > dd30Threshold) hitDD30 = true;
+          // Rovina = perdita del X% del CAPITALE INIZIALE (non dal picco)
+          // Es. 60% di $1000 = balance < $400, indipendentemente da picchi intermedi
+          const lossFromInitial = (params.ra_capital - balance) / params.ra_capital;
+          if (lossFromInitial >= ruinThreshold) {
+            ruined  = true;
             balance = params.ra_capital * (1 - ruinThreshold);
           }
         }
@@ -663,9 +667,14 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
           balance += pnlDay;
           if (balance < 0) balance = 0;
           if (balance > peakBalance) peakBalance = balance;
-          const dd = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
-          if (dd > dd30) hitDD30 = true;
-          if (dd >= ruinPct) {
+          // DD dal picco (per P(DD>30%))
+          const ddPeak = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
+          if (ddPeak > dd30) hitDD30 = true;
+          // Rovina = perdita del X% del CAPITALE INIZIALE
+          // Con compound il picco può essere molto alto, quindi usare DD dal picco
+          // causerebbe "rovina" anche con balance ancora sopra il capitale iniziale
+          const lossFromInitial = (params.ra_capital - balance) / params.ra_capital;
+          if (lossFromInitial >= ruinPct) {
             ruined  = true;
             balance = params.ra_capital * (1 - ruinPct);
           }
