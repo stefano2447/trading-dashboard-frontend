@@ -408,67 +408,55 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
 
 // ─── Simulatore Conto Reale ───────────────────────────────────────────────────
 function runRealAccountSimulation(eaComponents, params, riskPct) {
-  // Costruisce la serie dei P&L giornalieri in % del capitale backtest
-  // per ogni EA, poi li combina con cap per-EA.
-  // Con compound=true, ogni giorno il P&L scala con il balance corrente.
+  // OPZIONE B: riskPct = rischio per SINGOLA OPERAZIONE in % del capitale.
+  //
+  // Per ogni EA calcoliamo lo scale_factor che porta il suo rischio-per-trade
+  // (p90 single trade loss, o mmRiskedMoney per SQX) al riskPct voluto.
+  // Poi scaliamo tutta la serie P&L di quell'EA proporzionalmente.
+  // Niente cap necessario: il rischio per trade È il parametro.
 
   const minLen = Math.min(...eaComponents.map(c => c.daily_pnl_dollar.length));
 
-  // Combina i P&L in % (non in $) per supportare il compound
-  // Ogni EA contribuisce con i suoi daily_pnl_pct / initial_capital * initial_capital
-  // → di fatto daily_pnl_pct è già in % del capitale backtest
-
-  // 1. Calcola scale_factor base (come per challenge)
-  const rawCombined = new Array(minLen).fill(0);
-  for (const c of eaComponents) {
-    const arr = c.daily_pnl_dollar;
-    for (let i = 0; i < minLen; i++) rawCombined[i] += arr[arr.length - minLen + i];
-  }
-  const losses = rawCombined.filter(x => x < 0);
-  if (!losses.length) return null;
-
-  const avgLoss          = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
-  const riskTargetDollar = params.ra_capital * riskPct / 100.0;
-  const scaleFactorBase  = avgLoss > 0 ? riskTargetDollar / avgLoss : 1.0;
-
-  // 2. Per ogni EA, applica cap per-EA e calcola serie in % del capitale iniziale
-  // Con compound, questa % viene applicata al balance corrente ogni giorno
-  const maxRiskDollar = params.ra_capital * (params.max_risk_per_trade_pct || 2.0) / 100.0;
-  const eaSeries = [];  // array di serie in % (non in $)
+  // Per ogni EA: scale_factor = riskPct / rischio_per_trade_backtest%
+  const eaSeries = [];
+  const eaScaleFactors = [];
 
   for (const comp of eaComponents) {
     const sizing = comp.lot_sizing_type || "fixed_lots";
-    let riskPerTradeScaled;
+
+    // Rischio per trade dell'EA nel backtest, in % del capitale backtest
+    let perTradeRiskPct;
     if (sizing === "sqx_fixed_money") {
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
-      riskPerTradeScaled = mmBase * scaleFactorBase;
+      perTradeRiskPct = mmBase / comp.initial_capital * 100;
     } else {
-      const p90Pct = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 0;
-      riskPerTradeScaled = (p90Pct / 100.0) * comp.initial_capital * scaleFactorBase;
-    }
-    let sfEA = scaleFactorBase;
-    if (riskPerTradeScaled > maxRiskDollar && riskPerTradeScaled > 0) {
-      sfEA = scaleFactorBase * (maxRiskDollar / riskPerTradeScaled);
+      perTradeRiskPct = comp.p90_single_trade_loss_pct
+                        || comp.max_single_trade_loss_pct
+                        || 1.0;
     }
 
-    // Serie in % del capitale backtest, scalata
+    // scale_factor porta il rischio per trade dell'EA al riskPct voluto
+    const sfEA = perTradeRiskPct > 0 ? riskPct / perTradeRiskPct : 1.0;
+    eaScaleFactors.push(sfEA);
+
+    // Serie in % del capitale (dell'EA), scalata.
+    // daily_pnl_dollar è in $ sul capitale backtest → /initial = % → * sfEA
     const arr = comp.daily_pnl_dollar;
     const pctSeries = new Array(minLen);
     for (let i = 0; i < minLen; i++) {
-      pctSeries[i] = arr[arr.length - minLen + i] / comp.initial_capital * sfEA;
+      pctSeries[i] = (arr[arr.length - minLen + i] / comp.initial_capital) * sfEA;
     }
     eaSeries.push(pctSeries);
   }
 
-  // 3. Serie combinata in % (somma delle % di ogni EA)
+  // Serie combinata in % (somma dei contributi di ogni EA)
   const combinedPct = new Array(minLen).fill(0);
   for (const s of eaSeries) {
     for (let i = 0; i < minLen; i++) combinedPct[i] += s[i];
   }
 
-  // Orizzonti temporali in giorni
+  // Orizzonti temporali
   const horizons = [
-    { label: "1m",  days: 30 },
     { label: "3m",  days: 91 },
     { label: "6m",  days: 182 },
     { label: "12m", days: 365 },
@@ -478,115 +466,115 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
   }
 
   const maxHorizonDays = Math.max(...horizons.map(h => h.days));
-  const ruinThreshold  = params.ra_ruin_pct / 100.0;     // es. 0.60
+  const ruinThreshold  = params.ra_ruin_pct / 100.0;
   const dd30Threshold  = 0.30;
-  const compound       = params.ra_compound !== false;    // default true
+  const compound       = params.ra_compound !== false;
   const nSims          = params.n_simulations;
 
   const rand = mulberry32(12345);
-
-  // Risultati per orizzonte: array di balance finali
   const horizonResults = {};
   for (const h of horizons) horizonResults[h.label] = [];
 
-  let nRuined = 0;
-  let nDD30   = 0;
+  let nRuined = 0, nDD30 = 0;
   const maxDDList = [];
 
   for (let s = 0; s < nSims; s++) {
-    let balance    = params.ra_capital;
+    let balance     = params.ra_capital;
     let peakBalance = balance;
-    let ruined     = false;
-    let hitDD30    = false;
-    const snapshots = {};  // giorno → balance
+    let ruined      = false;
+    let hitDD30     = false;
+    const snapshots = {};
 
     for (let day = 1; day <= maxHorizonDays; day++) {
-      if (ruined) break;
+      if (!ruined) {
+        const idx    = Math.floor(rand() * combinedPct.length);
+        const pctDay = combinedPct[idx];
 
-      // Campiona un giorno dalla storia
-      const idx    = Math.floor(rand() * combinedPct.length);
-      const pctDay = combinedPct[idx];
+        if (pctDay !== 0) {
+          // compound: P&L scala col balance corrente; altrimenti col capitale iniziale
+          const pnlDay = compound ? pctDay * balance : pctDay * params.ra_capital;
+          balance += pnlDay;
+          if (balance < 0) balance = 0;
+          if (balance > peakBalance) peakBalance = balance;
 
-      if (pctDay !== 0) {
-        let pnlDay;
-        if (compound) {
-          // Con compound: P&L scala col balance corrente
-          pnlDay = pctDay * balance;
-        } else {
-          // Senza compound: P&L fisso in $ (scala col capitale iniziale)
-          pnlDay = pctDay * params.ra_capital;
-        }
-
-        balance += pnlDay;
-        if (balance < 0) balance = 0;
-        if (balance > peakBalance) peakBalance = balance;
-
-        const currentDD = (peakBalance - balance) / peakBalance;
-        if (currentDD > dd30Threshold) hitDD30 = true;
-        if (currentDD >= ruinThreshold) {
-          ruined = true;
-          balance = params.ra_capital * (1 - ruinThreshold);
+          const currentDD = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
+          if (currentDD > dd30Threshold) hitDD30 = true;
+          if (currentDD >= ruinThreshold) {
+            ruined = true;
+            balance = params.ra_capital * (1 - ruinThreshold);
+          }
         }
       }
-
-      // Snapshot agli orizzonti
       for (const h of horizons) {
         if (day === h.days) snapshots[h.label] = balance;
       }
     }
 
-    // Se la simulazione finisce prima dell'orizzonte (es. ruin prima di 12m)
     for (const h of horizons) {
-      if (snapshots[h.label] === undefined) {
-        snapshots[h.label] = balance;
-      }
+      if (snapshots[h.label] === undefined) snapshots[h.label] = balance;
       horizonResults[h.label].push(snapshots[h.label]);
     }
-
     if (ruined) nRuined++;
     if (hitDD30) nDD30++;
-    if (peakBalance > 0) {
-      maxDDList.push((peakBalance - balance) / peakBalance * 100);
-    }
+    if (peakBalance > 0) maxDDList.push((peakBalance - balance) / peakBalance * 100);
   }
 
-  // Calcola statistiche per ogni orizzonte
   const horizonStats = {};
   for (const h of horizons) {
     const balances = horizonResults[h.label].sort((a,b) => a-b);
     const n        = balances.length;
     const mean     = balances.reduce((a,b)=>a+b,0) / n;
-    const p5       = balances[Math.floor(n * 0.05)];
-    const p50      = balances[Math.floor(n * 0.50)];
-    const p95      = balances[Math.floor(n * 0.95)];
-
-    // Rendimento % rispetto al capitale iniziale
-    const toReturn = b => ((b - params.ra_capital) / params.ra_capital * 100);
-
+    const toRet    = b => ((b - params.ra_capital) / params.ra_capital * 100);
     horizonStats[h.label] = {
-      days:       h.days,
-      mean_bal:   Math.round(mean),
-      p5_bal:     Math.round(p5),
-      p50_bal:    Math.round(p50),
-      p95_bal:    Math.round(p95),
-      mean_ret:   Math.round(toReturn(mean)  * 10) / 10,
-      p5_ret:     Math.round(toReturn(p5)    * 10) / 10,
-      p50_ret:    Math.round(toReturn(p50)   * 10) / 10,
-      p95_ret:    Math.round(toReturn(p95)   * 10) / 10,
+      days:     h.days,
+      mean_bal: Math.round(mean),
+      p5_bal:   Math.round(balances[Math.floor(n*0.05)]),
+      p50_bal:  Math.round(balances[Math.floor(n*0.50)]),
+      p95_bal:  Math.round(balances[Math.floor(n*0.95)]),
+      mean_ret: Math.round(toRet(mean) * 10) / 10,
+      p5_ret:   Math.round(toRet(balances[Math.floor(n*0.05)]) * 10) / 10,
+      p50_ret:  Math.round(toRet(balances[Math.floor(n*0.50)]) * 10) / 10,
+      p95_ret:  Math.round(toRet(balances[Math.floor(n*0.95)]) * 10) / 10,
     };
   }
 
   const sortedDD = maxDDList.sort((a,b)=>a-b);
-  const n        = sortedDD.length;
+  const ndd = sortedDD.length;
+
+  // Lotti consigliati per ogni EA (basati sul capitale iniziale)
+  const lotRecs = eaComponents.map((comp, idx) => {
+    const sizing = comp.lot_sizing_type || "fixed_lots";
+    const sfEA   = eaScaleFactors[idx];
+    let paramName, paramValue, note;
+    if (sizing === "price_scaling_explicit") {
+      paramName = "base_lots"; paramValue = Math.round(comp.base_lots * sfEA * 10000)/10000;
+      note = "valido @ prezzo " + comp.defaultprice;
+    } else if (sizing === "price_scaling_implicit") {
+      paramName = "LotSize"; paramValue = Math.round(comp.ref_lots * sfEA * 10000)/10000;
+      note = "valido @ prezzo " + comp.ref_price;
+    } else if (sizing === "sqx_fixed_money") {
+      paramName = "mmRiskedMoney";
+      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
+      // Per sqx con capitale reale: mmRiskedMoney = riskPct% del capitale reale
+      paramValue = Math.round(params.ra_capital * riskPct / 100 * 100)/100;
+      note = "= " + riskPct + "% di $" + params.ra_capital;
+    } else {
+      paramName = "Lots"; paramValue = Math.round(comp.base_lots * sfEA * 10000)/10000;
+      note = "lotti fissi";
+    }
+    return { ea_name: comp.ea_name, sizing_type: sizing, param_name: paramName,
+             param_value: paramValue, note, scale_factor: Math.round(sfEA*10000)/10000 };
+  });
 
   return {
-    risk_pct:       riskPct,
-    p_ruin:         Math.round(nRuined / nSims * 10000) / 10000,
-    p_dd30:         Math.round(nDD30   / nSims * 10000) / 10000,
-    avg_max_dd:     Math.round(sortedDD.reduce((a,b)=>a+b,0)/n * 10) / 10,
-    p95_max_dd:     Math.round(sortedDD[Math.floor(n*0.95)] * 10) / 10,
-    horizons:       horizonStats,
-    compound:       compound,
+    risk_pct:    riskPct,
+    p_ruin:      Math.round(nRuined / nSims * 10000) / 10000,
+    p_dd30:      Math.round(nDD30   / nSims * 10000) / 10000,
+    avg_max_dd:  Math.round(sortedDD.reduce((a,b)=>a+b,0)/ndd * 10) / 10,
+    p95_max_dd:  Math.round(sortedDD[Math.floor(ndd*0.95)] * 10) / 10,
+    horizons:    horizonStats,
+    lot_recommendations: lotRecs,
+    compound:    compound,
   };
 }
 
@@ -630,13 +618,14 @@ self.onmessage = function(e) {
     self.postMessage({
       type: "result",
       data: {
-        sim_type:          "real_account",
+        sim_type:            "real_account",
         results,
-        optimal_risk_pct:  results[bestIdx]?.risk_pct ?? null,
-        n_trading_days:    nActive,
-        n_calendar_days:   nCalendar,
-        avg_trades_freq:   Math.round(nActive / nCalendar * 1000) / 10,
-        n_simulations:     params.n_simulations,
+        optimal_risk_pct:    results[bestIdx]?.risk_pct ?? null,
+        lot_recommendations: results[bestIdx]?.lot_recommendations ?? [],
+        n_trading_days:      nActive,
+        n_calendar_days:     nCalendar,
+        avg_trades_freq:     Math.round(nActive / nCalendar * 1000) / 10,
+        n_simulations:       params.n_simulations,
       }
     });
     return;
@@ -1823,8 +1812,8 @@ function RealAccountSimulator() {
   const optimal   = results?.optimal_risk_pct;
 
   // Orizzonti da mostrare
-  const horizonKeys = ["1m", "3m", "6m", "12m", ...(showCustom ? ["custom"] : [])];
-  const horizonLabel = { "1m": "1 mese", "3m": "3 mesi", "6m": "6 mesi", "12m": "12 mesi", "custom": `${customDays}gg` };
+  const horizonKeys = ["3m", "6m", "12m", ...(showCustom ? ["custom"] : [])];
+  const horizonLabel = { "3m": "3 mesi", "6m": "6 mesi", "12m": "12 mesi", "custom": customDays + "gg" };
 
   return (
     <div>
@@ -2006,83 +1995,142 @@ function RealAccountSimulator() {
                   );
                 })()}
 
-                {/* Tabella per orizzonte temporale */}
-                {horizonKeys.map(hk => {
-                  const hLabel = horizonLabel[hk];
-                  return (
-                    <Card key={hk}>
-                      <div style={{ fontSize:11,fontWeight:600,letterSpacing:"0.07em",
-                                    color:"var(--text-muted)",marginBottom:"0.75rem" }}>
-                        RENDIMENTO A {hLabel.toUpperCase()} — {compound?"CON COMPOUND":"SENZA COMPOUND"}
-                      </div>
-                      <div style={{ overflowX:"auto" }}>
-                        <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12 }}>
-                          <thead>
-                            <tr style={{ borderBottom:"1px solid var(--border)" }}>
-                              {["RISCHIO%","BAL.MEDIO","RET.MEDIO","RET.P5(worst)","RET.P50","RET.P95(best)","P(ROVINA)","P(DD>30%)","★"].map(h=>(
-                                <th key={h} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
-                                                     fontWeight:600,color:"var(--text-muted)",whiteSpace:"nowrap" }}>
-                                  {h}
-                                </th>
-                              ))}
+                {/* Tabella unica compatta */}
+                <Card>
+                  <div style={{ fontSize:11,fontWeight:600,letterSpacing:"0.07em",
+                                color:"var(--text-muted)",marginBottom:"0.75rem" }}>
+                    PROIEZIONE RENDIMENTO — {compound?"CON COMPOUND":"LOTTI FISSI"}
+                    <span style={{ fontWeight:400, marginLeft:8 }}>
+                      (rischio = % del capitale per singola operazione)
+                    </span>
+                  </div>
+                  <div style={{ overflowX:"auto" }}>
+                    <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12 }}>
+                      <thead>
+                        <tr style={{ borderBottom:"2px solid var(--border)" }}>
+                          <th rowSpan={2} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
+                                                   fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}>RISCHIO%</th>
+                          {horizonKeys.map(hk => (
+                            <th key={hk} colSpan={3} style={{ padding:"0.3rem 0.5rem",textAlign:"center",fontSize:10,
+                                                              fontWeight:700,color:"var(--text-secondary)",
+                                                              borderLeft:"1px solid var(--border)" }}>
+                              {horizonLabel[hk]}
+                            </th>
+                          ))}
+                          <th rowSpan={2} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
+                                                   fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom",
+                                                   borderLeft:"1px solid var(--border)" }}>P(ROVINA)</th>
+                          <th rowSpan={2} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
+                                                   fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}>P(DD&gt;30%)</th>
+                          <th rowSpan={2} style={{ padding:"0.4rem 0.3rem",textAlign:"center",fontSize:10,
+                                                   fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}>★</th>
+                        </tr>
+                        <tr style={{ borderBottom:"1px solid var(--border)" }}>
+                          {horizonKeys.map(hk => (
+                            ["P5","MEDIO","P95"].map((sub,si) => (
+                              <th key={hk+sub} style={{ padding:"0.3rem 0.4rem",textAlign:"right",fontSize:9,
+                                                        fontWeight:500,color:"var(--text-muted)",
+                                                        borderLeft: si===0?"1px solid var(--border)":"none" }}>
+                                {sub}
+                              </th>
+                            ))
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {results.results.map(r => {
+                          const isOpt  = r.risk_pct === optimal;
+                          const p_ruin = r.p_ruin || 0;
+                          return (
+                            <tr key={r.risk_pct}
+                              style={{ background:isOpt?"var(--accent-dim)":"transparent",
+                                       borderLeft:isOpt?"2px solid var(--accent)":"2px solid transparent",
+                                       borderBottom:"1px solid var(--border)" }}>
+                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                           fontWeight:isOpt?700:400,color:isOpt?"var(--accent)":"var(--text-primary)" }}>
+                                {r.risk_pct}%
+                              </td>
+                              {horizonKeys.map(hk => {
+                                const h = r.horizons?.[hk] || {};
+                                return [
+                                  <td key={hk+"p5"} style={{ padding:"0.35rem 0.4rem",textAlign:"right",
+                                       fontFamily:"var(--font-data)",fontSize:11,
+                                       color:(h.p5_ret>0)?"var(--text-muted)":"var(--danger)",
+                                       borderLeft:"1px solid var(--border)" }}>
+                                    {h.p5_ret ?? "—"}%
+                                  </td>,
+                                  <td key={hk+"mean"} style={{ padding:"0.35rem 0.4rem",textAlign:"right",
+                                       fontFamily:"var(--font-data)",fontWeight:600,
+                                       color:(h.mean_ret>0)?"var(--accent)":"var(--danger)" }}>
+                                    {h.mean_ret ?? "—"}%
+                                  </td>,
+                                  <td key={hk+"p95"} style={{ padding:"0.35rem 0.4rem",textAlign:"right",
+                                       fontFamily:"var(--font-data)",fontSize:11,color:"var(--text-muted)" }}>
+                                    {h.p95_ret ?? "—"}%
+                                  </td>
+                                ];
+                              })}
+                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                           color:p_ruin<0.05?"var(--accent)":p_ruin<0.15?"var(--warning)":"var(--danger)",
+                                           borderLeft:"1px solid var(--border)" }}>
+                                {(p_ruin*100).toFixed(1)}%
+                              </td>
+                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                           color:(r.p_dd30||0)<0.2?"var(--text-secondary)":"var(--warning)" }}>
+                                {((r.p_dd30||0)*100).toFixed(1)}%
+                              </td>
+                              <td style={{ padding:"0.35rem 0.3rem",textAlign:"center",fontSize:11,color:"var(--accent)" }}>
+                                {isOpt?"★":""}
+                              </td>
                             </tr>
-                          </thead>
-                          <tbody>
-                            {results.results.map(r => {
-                              const h      = r.horizons?.[hk];
-                              if (!h) return null;
-                              const isOpt  = r.risk_pct === optimal;
-                              const p_ruin = r.p_ruin || 0;
-                              return (
-                                <tr key={r.risk_pct}
-                                  style={{ background:isOpt?"var(--accent-dim)":"transparent",
-                                           borderLeft:isOpt?"2px solid var(--accent)":"2px solid transparent",
-                                           borderBottom:"1px solid var(--border)" }}>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                               fontWeight:isOpt?700:400,color:isOpt?"var(--accent)":"var(--text-primary)" }}>
-                                    {r.risk_pct}%
-                                  </td>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                               color:"var(--text-secondary)" }}>
-                                    ${h.mean_bal.toLocaleString()}
-                                  </td>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                               color:h.mean_ret>0?"var(--accent)":"var(--danger)",fontWeight:600 }}>
-                                    {h.mean_ret}%
-                                  </td>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                               color:h.p5_ret>0?"var(--text-secondary)":"var(--danger)" }}>
-                                    {h.p5_ret}%
-                                  </td>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                               color:"var(--text-secondary)" }}>
-                                    {h.p50_ret}%
-                                  </td>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                               color:"var(--accent)" }}>
-                                    {h.p95_ret}%
-                                  </td>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                               color:p_ruin<0.05?"var(--accent)":p_ruin<0.15?"var(--warning)":"var(--danger)" }}>
-                                    {(p_ruin*100).toFixed(1)}%
-                                  </td>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                               color:(r.p_dd30||0)<0.2?"var(--text-secondary)":"var(--warning)" }}>
-                                    {((r.p_dd30||0)*100).toFixed(1)}%
-                                  </td>
-                                  <td style={{ padding:"0.35rem 0.5rem",textAlign:"center",fontSize:11,
-                                               color:"var(--accent)" }}>
-                                    {isOpt?"★":""}
-                                  </td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                    </Card>
-                  );
-                })}
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div style={{ fontSize:10,color:"var(--text-muted)",marginTop:"0.5rem" }}>
+                    P5 = worst case (95% dei casi fa meglio) · MEDIO = atteso · P95 = best case (solo 5% fa meglio)
+                  </div>
+                </Card>
+
+                {/* Lotti consigliati al rischio ottimale */}
+                {results.lot_recommendations && results.lot_recommendations.length > 0 && (
+                  <Card>
+                    <div style={{ fontSize:11,fontWeight:600,letterSpacing:"0.07em",
+                                  color:"var(--text-muted)",marginBottom:"0.75rem" }}>
+                      PARAMETRI DA IMPOSTARE @ RISCHIO OTTIMALE ({optimal}% per trade)
+                    </div>
+                    <table style={{ width:"100%",borderCollapse:"collapse",fontSize:12 }}>
+                      <thead>
+                        <tr style={{ borderBottom:"1px solid var(--border)" }}>
+                          {["EA","PARAMETRO","VALORE",""].map(h=>(
+                            <th key={h} style={{ padding:"0.35rem 0.5rem",textAlign:h==="EA"?"left":"right",
+                                                 fontSize:10,fontWeight:600,color:"var(--text-muted)" }}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {results.lot_recommendations.map(rec => (
+                          <tr key={rec.ea_name} style={{ borderBottom:"1px solid var(--border)" }}>
+                            <td style={{ padding:"0.35rem 0.5rem",color:"var(--text-primary)",fontWeight:500 }}>{rec.ea_name}</td>
+                            <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",color:"var(--text-muted)",fontSize:11 }}>{rec.param_name}</td>
+                            <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                         fontWeight:700,color:"var(--accent)" }}>
+                              {rec.sizing_type==="sqx_fixed_money" ? `$${Number(rec.param_value).toFixed(0)}` : Number(rec.param_value).toFixed(4)}
+                            </td>
+                            <td style={{ padding:"0.35rem 0.5rem",textAlign:"right" }}>
+                              {rec.note && <span title={rec.note} style={{ fontSize:10,color:"var(--text-muted)",cursor:"help" }}>ⓘ</span>}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    <div style={{ fontSize:10,color:"var(--text-muted)",marginTop:"0.5rem" }}>
+                      Lotti calcolati sul capitale iniziale di ${capital.toLocaleString()}.
+                      {compound && " Con compound attivo, aumentali periodicamente in proporzione al balance."}
+                    </div>
+                  </Card>
+                )}
 
                 <div style={{ fontSize:11,color:"var(--text-muted)" }}>
                   {results.n_simulations.toLocaleString()} simulazioni ·
