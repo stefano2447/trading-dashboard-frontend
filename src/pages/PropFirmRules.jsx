@@ -770,26 +770,49 @@ self.onmessage = function(e) {
     //   2. P(rovina) < 5%
     // Se nessun livello soddisfa i vincoli, prende il meno rischioso.
     let bestIdx = 0, bestScore = -1e9;
-    const ruinLimit = (params.ra_ruin_max_pct || 5) / 100.0;
+    const ruinLimit  = (params.ra_ruin_max_pct || 5)  / 100.0;
+    const dd30Limit  = (params.ra_dd30_max_pct || 50) / 100.0;  // default 50% = quasi disattivato
+    const ruinPctNeg = -(params.ra_ruin_pct || 60);
+
     let anyValid = false;
     for (let i = 0; i < results.length; i++) {
       const r    = results[i];
       const h12  = r.horizons["12m"] || r.horizons["custom"];
       if (!h12) continue;
-      const p_ruin  = r.p_ruin || 0;
+      const p_ruin  = r.p_ruin  || 0;
+      const p_dd30  = r.p_dd30  || 0;
       const p5_12m  = h12.p5_ret;
-      // Vincolo: P5 non deve essere la soglia di rovina (-ruin_pct)
-      const ruinPctNeg = -(params.ra_ruin_pct || 60);
-      const p5Valid = p5_12m > ruinPctNeg + 5;  // margine 5%
+
+      // Tre vincoli:
+      // 1. P5 a 12m non deve toccare la soglia di rovina
+      // 2. P(rovina) sotto il limite configurabile
+      // 3. P(DD>30%) sotto il limite configurabile (vincolo psicologico)
+      const p5Valid   = p5_12m > ruinPctNeg + 5;
       const ruinValid = p_ruin < ruinLimit;
-      if (p5Valid && ruinValid) {
+      const dd30Valid = p_dd30 < dd30Limit;
+
+      if (p5Valid && ruinValid && dd30Valid) {
         anyValid = true;
-        // Tra i validi, massimizza il rendimento medio a 12m
         const score = h12.mean_ret;
         if (score > bestScore) { bestScore = score; bestIdx = i; }
       }
     }
-    // Fallback: se nessuno è "valido", prende quello con P5 migliore
+    // Fallback: se nessun livello rispetta tutti i vincoli,
+    // rilassa P(DD>30%) e tieni solo i vincoli di rovina
+    if (!anyValid) {
+      for (let i = 0; i < results.length; i++) {
+        const r   = results[i];
+        const h12 = r.horizons["12m"] || r.horizons["custom"];
+        if (!h12) continue;
+        const p5Valid   = h12.p5_ret > ruinPctNeg + 5;
+        const ruinValid = (r.p_ruin || 0) < ruinLimit;
+        if (p5Valid && ruinValid) {
+          anyValid = true;
+          if (h12.mean_ret > bestScore) { bestScore = h12.mean_ret; bestIdx = i; }
+        }
+      }
+    }
+    // Fallback finale: prende il P5 migliore
     if (!anyValid) {
       for (let i = 0; i < results.length; i++) {
         const h12 = results[i].horizons["12m"] || results[i].horizons["custom"];
@@ -1927,6 +1950,7 @@ function RealAccountSimulator() {
   const [ruinPct,      setRuinPct]      = useState(60);
   const [maxRiskPerTrade, setMaxRiskPerTrade] = useState(2.0);
   const [pRuinMax,     setPRuinMax]     = useState(5);   // % max P(rovina) per ottimale
+  const [pDD30Max,     setPDD30Max]     = useState(30);  // % max P(DD>30%) per ottimale
   const [blockSize,    setBlockSize]    = useState(1);   // giorni per block bootstrap (1=classico)
   const [customDays, setCustomDays] = useState(180);
   const [showCustom, setShowCustom] = useState(false);
@@ -2055,6 +2079,7 @@ function RealAccountSimulator() {
         ra_capital:     capital,
         ra_ruin_pct:       ruinPct,
         ra_ruin_max_pct:   pRuinMax,
+        ra_dd30_max_pct:   pDD30Max,
         ra_block_size:     blockSize,
         ra_custom_days:    showCustom ? customDays : 0,
         risk_min_pct:   riskMin,
@@ -2198,6 +2223,9 @@ function RealAccountSimulator() {
                   { label: "P(rovina) max (%)",
                     hint:  "ottimale = max rendimento con P(rovina) sotto questa soglia",
                     val: pRuinMax, set: setPRuinMax },
+                  { label: "P(DD>30%) max (%)",
+                    hint:  "ottimale esclude livelli dove il drawdown >30% è troppo probabile. Abbassa a 15-20% per conti che non vuoi vedere in forte perdita",
+                    val: pDD30Max, set: setPDD30Max },
                   { label: "Block bootstrap (giorni)",
                     hint:  "1=indipendente, 10-20=preserva correlazione temporale (più realistico)",
                     val: blockSize, set: setBlockSize },
