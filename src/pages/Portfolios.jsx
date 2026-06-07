@@ -57,6 +57,8 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
   const [filterMaxDos,     setFilterMaxDos]     = useState("");
   const [filterNea,        setFilterNea]        = useState("");
   const [filterMinRecency, setFilterMinRecency] = useState("");
+  const [filterMinUpi,     setFilterMinUpi]     = useState("");
+  const [filterMinRf,      setFilterMinRf]      = useState("");
 
   function toggleSort(key) {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -67,7 +69,9 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
     .filter(p => !filterMinCalmar  || p.calmar >= parseFloat(filterMinCalmar))
     .filter(p => !filterMaxDos     || p.avg_dos <= parseFloat(filterMaxDos))
     .filter(p => !filterNea        || p.ea_list.length === parseInt(filterNea))
-    .filter(p => !filterMinRecency || (p.portfolio_recency ?? 0) >= parseFloat(filterMinRecency));
+    .filter(p => !filterMinRecency || (p.portfolio_recency ?? 0) >= parseFloat(filterMinRecency))
+    .filter(p => !filterMinUpi     || (p.portfolio_upi ?? 0)      >= parseFloat(filterMinUpi))
+    .filter(p => !filterMinRf      || (p.portfolio_recovery_factor ?? 0) >= parseFloat(filterMinRf));
 
   const sorted = [...filtered].sort((a, b) => {
     const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
@@ -100,6 +104,8 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
           { label: "DOS max",    val: filterMaxDos,    set: setFilterMaxDos,    ph: "es. 0.3" },
           { label: "N° EA",        val: filterNea,        set: setFilterNea,        ph: "es. 3"   },
           { label: "Recency min",  val: filterMinRecency, set: setFilterMinRecency, ph: "es. 0.8" },
+          { label: "UPI min",       val: filterMinUpi,     set: setFilterMinUpi,     ph: "es. 1.5" },
+          { label: "RF min",        val: filterMinRf,      set: setFilterMinRf,      ph: "es. 3"   },
         ].map(({ label, val, set, ph }) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
             <span style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{label}</span>
@@ -130,10 +136,14 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
               {th("CALMAR",  "calmar")}
               {th("SHARPE",  "sharpe")}
               {th("MAX DD%", "max_dd_pct")}
-              {th("AVG DOS", "avg_dos")}
-              {th("MAX DOS", "max_dos")}
-              {th("RECENCY", "portfolio_recency")}
-              {th("SCORE",   "composite_score")}
+              {th("AVG DOS",  "avg_dos")}
+              {th("MAX DOS",  "max_dos")}
+              {th("RECENCY",  "portfolio_recency")}
+              {th("UPI",      "portfolio_upi")}
+              {th("RF",       "portfolio_recovery_factor")}
+              {th("UI%",      "portfolio_ulcer_index")}
+              {th("CAGR%",    "portfolio_cagr_pct")}
+              {th("SCORE",    "composite_score")}
               <th style={{ padding: "0.5rem 0.75rem", fontSize: 11, color: "var(--text-muted)" }}>
                 EA
               </th>
@@ -198,16 +208,61 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                     <span
                       title={p.portfolio_recency != null
                         ? "Calmar recente / Calmar storico = " + fmt(p.portfolio_recency, 2) + "x — " + (
-                            p.portfolio_recency >= 1.2 ? "performance recente sopra la media storica" :
+                            p.portfolio_recency >= 1.2 ? "sopra la media storica" :
                             p.portfolio_recency >= 0.7 ? "in linea con lo storico" :
                             p.portfolio_recency >= 0.3 ? "deterioramento parziale" : "deterioramento severo")
-                        : "Dati non disponibili — rigenera il JSON"}
+                        : "Rigenera il JSON"}
                       style={{ cursor: "help", color: recencyColor(p.portfolio_recency) }}>
                       {p.portfolio_recency != null
                         ? fmt(p.portfolio_recency, 2) + "x " + recencyLabel(p.portfolio_recency)
                         : "—"}
                     </span>
                   </td>
+
+                  {/* UPI */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)",
+                               color: (p.portfolio_upi ?? 0) >= 3 ? "var(--accent)" :
+                                      (p.portfolio_upi ?? 0) >= 1 ? "var(--text-secondary)" : "var(--warning)" }}>
+                    <span title="Ulcer Performance Index = CAGR / Ulcer Index. Misura qualità del DD (durata + profondità). ≥3 ottimo, ≥1 accettabile"
+                          style={{ cursor: "help" }}>
+                      {p.portfolio_upi != null ? fmt(p.portfolio_upi, 2) : "—"}
+                    </span>
+                  </td>
+
+                  {/* Recovery Factor */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)",
+                               color: (p.portfolio_recovery_factor ?? 0) >= 5 ? "var(--accent)" :
+                                      (p.portfolio_recovery_factor ?? 0) >= 2 ? "var(--text-secondary)" : "var(--warning)" }}>
+                    <span title="Recovery Factor = Profitto totale / MaxDD. ≥5 ottimo, ≥2 accettabile"
+                          style={{ cursor: "help" }}>
+                      {p.portfolio_recovery_factor != null ? fmt(p.portfolio_recovery_factor, 2) : "—"}
+                    </span>
+                  </td>
+
+                  {/* Ulcer Index % */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)",
+                               color: (p.portfolio_ulcer_index ?? 99) <= 5  ? "var(--accent)" :
+                                      (p.portfolio_ulcer_index ?? 99) <= 15 ? "var(--text-secondary)" : "var(--warning)" }}>
+                    <span title="Ulcer Index % — radice della media dei drawdown quadratici. Più basso = equity curve più liscia"
+                          style={{ cursor: "help" }}>
+                      {p.portfolio_ulcer_index != null ? fmt(p.portfolio_ulcer_index, 1) + "%" : "—"}
+                    </span>
+                  </td>
+
+                  {/* CAGR portafoglio combinato */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)",
+                               color: (p.portfolio_cagr_pct ?? 0) >= 20 ? "var(--accent)" :
+                                      (p.portfolio_cagr_pct ?? 0) >= 10 ? "var(--text-secondary)" : "var(--warning)" }}>
+                    <span title="CAGR del portafoglio combinato (equity curve aggregata degli EA)"
+                          style={{ cursor: "help" }}>
+                      {p.portfolio_cagr_pct != null ? fmt(p.portfolio_cagr_pct, 1) + "%" : "—"}
+                    </span>
+                  </td>
+
                   <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
                                fontFamily: "var(--font-data)", fontWeight: 600, color: "var(--accent)" }}>
                     {fmt(p.composite_score, 3)}
@@ -267,13 +322,31 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
           <Badge value={"DOS " + fmt(portfolio.avg_dos, 3)} type={portfolio.avg_dos < 0.2 ? "positive" : portfolio.avg_dos < 0.4 ? "warning" : "negative"} />
           <Badge value={"MaxDD " + fmt(portfolio.max_dd_pct) + "%"} type={portfolio.max_dd_pct > 15 ? "negative" : "warning"} />
           {portfolio.portfolio_recency != null && (
-            <span
-              title={"Calmar recente / storico = " + fmt(portfolio.portfolio_recency, 2) + "x (ultimi 90gg)"}
-              style={{ cursor: "help" }}>
-              <Badge
-                value={"Recency " + fmt(portfolio.portfolio_recency, 2) + "x"}
-                type={portfolio.portfolio_recency >= 1.2 ? "positive" : portfolio.portfolio_recency >= 0.7 ? "neutral" : "negative"}
-              />
+            <span title={"Calmar recente / storico = " + fmt(portfolio.portfolio_recency, 2) + "x (ultimi 90gg)"}
+                  style={{ cursor: "help" }}>
+              <Badge value={"Recency " + fmt(portfolio.portfolio_recency, 2) + "x"}
+                     type={portfolio.portfolio_recency >= 1.2 ? "positive" : portfolio.portfolio_recency >= 0.7 ? "neutral" : "negative"} />
+            </span>
+          )}
+          {portfolio.portfolio_upi != null && (
+            <span title={"UPI = " + fmt(portfolio.portfolio_upi, 2) + " — Ulcer Performance Index (CAGR / Ulcer Index)"}
+                  style={{ cursor: "help" }}>
+              <Badge value={"UPI " + fmt(portfolio.portfolio_upi, 2)}
+                     type={portfolio.portfolio_upi >= 3 ? "positive" : portfolio.portfolio_upi >= 1 ? "neutral" : "negative"} />
+            </span>
+          )}
+          {portfolio.portfolio_recovery_factor != null && (
+            <span title={"Recovery Factor = " + fmt(portfolio.portfolio_recovery_factor, 2) + " (profitto totale / MaxDD)"}
+                  style={{ cursor: "help" }}>
+              <Badge value={"RF " + fmt(portfolio.portfolio_recovery_factor, 2)}
+                     type={portfolio.portfolio_recovery_factor >= 5 ? "positive" : portfolio.portfolio_recovery_factor >= 2 ? "neutral" : "negative"} />
+            </span>
+          )}
+          {portfolio.portfolio_cagr_pct != null && (
+            <span title={"CAGR portafoglio combinato = " + fmt(portfolio.portfolio_cagr_pct, 1) + "%"}
+                  style={{ cursor: "help" }}>
+              <Badge value={"CAGR " + fmt(portfolio.portfolio_cagr_pct, 1) + "%"}
+                     type={portfolio.portfolio_cagr_pct >= 20 ? "positive" : "neutral"} />
             </span>
           )}
         </div>
