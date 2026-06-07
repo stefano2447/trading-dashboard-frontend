@@ -483,17 +483,27 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
   let nRuined = 0, nDD30 = 0;
   const maxDDList = [];
 
+  const blockSize = Math.max(1, Math.round(params.ra_block_size || 1));
+  const nBlocks   = combinedDollar.length - blockSize + 1;
+
   for (let s = 0; s < nSims; s++) {
     let balance     = params.ra_capital;
     let peakBalance = balance;
     let ruined      = false;
     let hitDD30     = false;
     const snapshots = {};
+    let dayCount    = 0;
 
-    for (let day = 1; day <= maxHorizonDays; day++) {
-      if (!ruined) {
-        const pnlDay = combinedDollar[Math.floor(rand() * combinedDollar.length)];
-        if (pnlDay !== 0) {
+    while (dayCount < maxHorizonDays) {
+      // Block bootstrap: campiona un blocco di giorni consecutivi
+      const blockStart = Math.floor(rand() * (blockSize > 1 ? nBlocks : combinedDollar.length));
+      const blockEnd   = Math.min(blockStart + blockSize, combinedDollar.length);
+
+      for (let bi = blockStart; bi < blockEnd && dayCount < maxHorizonDays; bi++) {
+        dayCount++;
+        const day    = dayCount;
+        const pnlDay = combinedDollar[bi];
+      if (pnlDay !== 0) {
           balance += pnlDay;
           if (balance < 0) balance = 0;
           if (balance > peakBalance) peakBalance = balance;
@@ -508,13 +518,13 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
             balance = params.ra_capital * (1 - ruinThreshold);
           }
         }
-      }
-      for (const h of horizons) {
-        if (day === h.days && snapshots[h.label] === undefined) {
-          snapshots[h.label] = balance;
+        for (const h of horizons) {
+          if (day === h.days && snapshots[h.label] === undefined) {
+            snapshots[h.label] = balance;
+          }
         }
-      }
-    }
+      }  // fine blocco
+    }  // fine while
     for (const h of horizons) {
       horizonBalances[h.label].push(snapshots[h.label] ?? balance);
     }
@@ -651,38 +661,42 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
   for (const h of horizons) horizonBalances[h.label] = [];
   let nRuined = 0, nDD30 = 0;
 
+  const cBlockSize = Math.max(1, Math.round(params.ra_block_size || 1));
+  const cNBlocks   = combinedPct.length - cBlockSize + 1;
+
   for (let s = 0; s < nSims; s++) {
     let balance     = params.ra_capital;
     let peakBalance = balance;
     let ruined      = false;
     let hitDD30     = false;
     const snapshots = {};
+    let dayCount    = 0;
 
-    for (let day = 1; day <= maxDays; day++) {
-      if (!ruined) {
-        const pctDay = combinedPct[Math.floor(rand() * combinedPct.length)];
-        if (pctDay !== 0) {
-          // COMPOUND: P&L scala col balance corrente
+    while (dayCount < maxDays) {
+      const blockStart = Math.floor(rand() * (cBlockSize > 1 ? Math.max(cNBlocks,1) : combinedPct.length));
+      const blockEnd   = Math.min(blockStart + cBlockSize, combinedPct.length);
+
+      for (let bi = blockStart; bi < blockEnd && dayCount < maxDays; bi++) {
+        dayCount++;
+        const day    = dayCount;
+        const pctDay = combinedPct[bi];
+        if (pctDay !== 0 && !ruined) {
           const pnlDay = pctDay * balance;
           balance += pnlDay;
           if (balance < 0) balance = 0;
           if (balance > peakBalance) peakBalance = balance;
-          // DD dal picco (per P(DD>30%))
           const ddPeak = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
           if (ddPeak > dd30) hitDD30 = true;
-          // Rovina = perdita del X% del CAPITALE INIZIALE
-          // Con compound il picco può essere molto alto, quindi usare DD dal picco
-          // causerebbe "rovina" anche con balance ancora sopra il capitale iniziale
           const lossFromInitial = (params.ra_capital - balance) / params.ra_capital;
           if (lossFromInitial >= ruinPct) {
             ruined  = true;
             balance = params.ra_capital * (1 - ruinPct);
           }
         }
-      }
-      for (const h of horizons) {
-        if (day === h.days && snapshots[h.label] === undefined) {
-          snapshots[h.label] = balance;
+        for (const h of horizons) {
+          if (day === h.days && snapshots[h.label] === undefined) {
+            snapshots[h.label] = balance;
+          }
         }
       }
     }
@@ -756,7 +770,7 @@ self.onmessage = function(e) {
     //   2. P(rovina) < 5%
     // Se nessun livello soddisfa i vincoli, prende il meno rischioso.
     let bestIdx = 0, bestScore = -1e9;
-    const ruinLimit = 0.05;
+    const ruinLimit = (params.ra_ruin_max_pct || 5) / 100.0;
     let anyValid = false;
     for (let i = 0; i < results.length; i++) {
       const r    = results[i];
@@ -1304,6 +1318,7 @@ function ChallengeSimulator({ firms }) {
         compound_risk_pct: results.optimal_risk_pct,
         ra_capital:        capital,
         ra_ruin_pct:       ruinPct,
+        ra_block_size:     blockSize,
         ra_custom_days:    showCustom ? customDays : 0,
         n_simulations:     nSim,
         max_risk_per_trade_pct: maxRiskPerTrade,
@@ -1909,8 +1924,10 @@ function RealAccountSimulator() {
   const [riskMax,   setRiskMax]   = useState(3.0);
   const [riskStep,  setRiskStep]  = useState(0.25);
   const [nSim,      setNSim]      = useState(3000);
-  const [ruinPct,   setRuinPct]   = useState(60);
+  const [ruinPct,      setRuinPct]      = useState(60);
   const [maxRiskPerTrade, setMaxRiskPerTrade] = useState(2.0);
+  const [pRuinMax,     setPRuinMax]     = useState(5);   // % max P(rovina) per ottimale
+  const [blockSize,    setBlockSize]    = useState(1);   // giorni per block bootstrap (1=classico)
   const [customDays, setCustomDays] = useState(180);
   const [showCustom, setShowCustom] = useState(false);
 
@@ -2004,6 +2021,7 @@ function RealAccountSimulator() {
         compound_risk_pct: results.optimal_risk_pct,
         ra_capital:        capital,
         ra_ruin_pct:       ruinPct,
+        ra_block_size:     blockSize,
         ra_custom_days:    showCustom ? customDays : 0,
         n_simulations:     nSim,
         max_risk_per_trade_pct: maxRiskPerTrade,
@@ -2035,8 +2053,10 @@ function RealAccountSimulator() {
       params: {
         sim_type:       "real_account",
         ra_capital:     capital,
-        ra_ruin_pct:    ruinPct,
-        ra_custom_days: showCustom ? customDays : 0,
+        ra_ruin_pct:       ruinPct,
+        ra_ruin_max_pct:   pRuinMax,
+        ra_block_size:     blockSize,
+        ra_custom_days:    showCustom ? customDays : 0,
         risk_min_pct:   riskMin,
         risk_max_pct:   riskMax,
         risk_step_pct:  riskStep,
@@ -2120,9 +2140,9 @@ function RealAccountSimulator() {
               <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em",
                             color: "var(--text-muted)", marginBottom: "0.75rem" }}>PARAMETRI CONTO</div>
               {[
-                { label: "Capitale ($)",          val: capital,         set: setCapital },
+                { label: "Capitale ($)",           val: capital,         set: setCapital },
                 { label: "Max rischio/trade (%)",  val: maxRiskPerTrade, set: setMaxRiskPerTrade },
-                { label: "Soglia rovina (%)",       val: ruinPct,         set: setRuinPct },
+                { label: "Soglia rovina (%)",      val: ruinPct,         set: setRuinPct },
               ].map(({label,val,set}) => (
                 <div key={label} style={{ display:"flex", justifyContent:"space-between",
                                           alignItems:"center", marginBottom:"0.5rem" }}>
@@ -2155,10 +2175,10 @@ function RealAccountSimulator() {
                 </div>
               )}
               {[
-                { label: "Rischio min (%)", val: riskMin,  set: setRiskMin },
-                { label: "Rischio max (%)", val: riskMax,  set: setRiskMax },
-                { label: "Step (%)",        val: riskStep, set: setRiskStep },
-                { label: "Simulazioni",     val: nSim,     set: setNSim },
+                { label: "Rischio min (%)",   val: riskMin,   set: setRiskMin },
+                { label: "Rischio max (%)",   val: riskMax,   set: setRiskMax },
+                { label: "Step (%)",          val: riskStep,  set: setRiskStep },
+                { label: "Simulazioni",       val: nSim,      set: setNSim },
               ].map(({label,val,set}) => (
                 <div key={label} style={{ display:"flex", justifyContent:"space-between",
                                           alignItems:"center", marginBottom:"0.5rem" }}>
@@ -2169,6 +2189,31 @@ function RealAccountSimulator() {
                              borderRadius:"var(--radius-sm)", color:"var(--text-primary)" }}/>
                 </div>
               ))}
+              {/* Parametri ottimizzazione */}
+              <div style={{ borderTop:"1px solid var(--border)", paddingTop:"0.75rem",
+                            marginTop:"0.25rem" }}>
+                <div style={{ fontSize:11, fontWeight:600, letterSpacing:"0.07em",
+                              color:"var(--text-muted)", marginBottom:"0.5rem" }}>OTTIMIZZAZIONE</div>
+                {[
+                  { label: "P(rovina) max (%)",
+                    hint:  "ottimale = max rendimento con P(rovina) sotto questa soglia",
+                    val: pRuinMax, set: setPRuinMax },
+                  { label: "Block bootstrap (giorni)",
+                    hint:  "1=indipendente, 10-20=preserva correlazione temporale (più realistico)",
+                    val: blockSize, set: setBlockSize },
+                ].map(({label,hint,val,set}) => (
+                  <div key={label} style={{ display:"flex", justifyContent:"space-between",
+                                            alignItems:"center", marginBottom:"0.5rem" }}>
+                    <span style={{ fontSize:12, color:"var(--text-muted)", cursor:"help" }}
+                          title={hint}>{label} ⓘ</span>
+                    <input type="number" value={val} onChange={e=>set(parseFloat(e.target.value))}
+                      style={{ width:80, padding:"0.2rem 0.4rem", fontSize:12, textAlign:"right",
+                               background:"var(--bg-elevated)", border:"1px solid var(--border)",
+                               borderRadius:"var(--radius-sm)", color:"var(--text-primary)" }}/>
+                  </div>
+                ))}
+              </div>
+
               <button onClick={runSimulation} disabled={running||!selId}
                 style={{ width:"100%", marginTop:"0.75rem", padding:"0.6rem", fontSize:13, fontWeight:600,
                          background: running||!selId?"var(--bg-elevated)":"var(--accent-dim)",
