@@ -2331,6 +2331,11 @@ function RealAccountSimulator() {
                                                    borderLeft:"1px solid var(--border)" }}>P(ROVINA)</th>
                           <th rowSpan={2} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
                                                    fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}>P(DD&gt;30%)</th>
+                          <th rowSpan={2} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
+                                                   fontWeight:600,color:"var(--warning)",verticalAlign:"bottom" }}
+                              title="MaxDD nel 95° percentile peggiore — usa questo come riferimento per il capitale da tenere a riserva">
+                            P95 DD%
+                          </th>
                           <th rowSpan={2} style={{ padding:"0.4rem 0.3rem",textAlign:"center",fontSize:10,
                                                    fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}>★</th>
                         </tr>
@@ -2388,6 +2393,13 @@ function RealAccountSimulator() {
                                            color:(r.p_dd30||0)<0.2?"var(--text-secondary)":"var(--warning)" }}>
                                 {((r.p_dd30||0)*100).toFixed(1)}%
                               </td>
+                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                           fontWeight: isOpt ? 700 : 400,
+                                           color: (r.p95_max_dd||0)<10 ? "var(--accent)" :
+                                                  (r.p95_max_dd||0)<20 ? "var(--warning)" : "var(--danger)" }}
+                                  title={"Nel 95% dei casi peggiori il DD massimo non ha superato " + (r.p95_max_dd||0).toFixed(1) + "% — tieni almeno questa cifra come riserva"}>
+                                {r.p95_max_dd != null ? (r.p95_max_dd).toFixed(1)+"%" : "—"}
+                              </td>
                               <td style={{ padding:"0.35rem 0.3rem",textAlign:"center",fontSize:11,color:"var(--accent)" }}>
                                 {isOpt?"★":""}
                               </td>
@@ -2398,7 +2410,8 @@ function RealAccountSimulator() {
                     </table>
                   </div>
                   <div style={{ fontSize:10,color:"var(--text-muted)",marginTop:"0.5rem" }}>
-                    P5 = worst case (95% dei casi fa meglio) · MEDIO = atteso · P95 = best case (solo 5% fa meglio)
+                    P5 = worst case (95% dei casi fa meglio) · MEDIO = atteso · P95 = best case (solo 5% fa meglio) ·
+                    <span style={{ color:"var(--warning)" }}> P95 DD% = drawdown massimo nel 95° percentile peggiore — usa come riferimento per la riserva di capitale</span>
                   </div>
                 </Card>
 
