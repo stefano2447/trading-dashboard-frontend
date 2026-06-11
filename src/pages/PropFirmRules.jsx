@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Edit2, Check, X, ChevronDown, ChevronUp,
          Play, TrendingUp, AlertTriangle, Target } from "lucide-react";
-import { api } from "../api/client";
+import { api } from "../services/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
@@ -10,7 +10,7 @@ import { Spinner } from "../components/ui/Spinner";
 //  SEZIONE REGOLE (invariata) — solo componenti interni rifattorizzati
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ─── Worker inline (evita problemi di percorso con Vite/Vercel) ──────────────
+// ─── Worker inline ──────────────────────────────────────────────────────────
 function createMonteCarloWorker() {
   const code = `/**
  * monteCarloWorker.js
@@ -262,10 +262,21 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
     let riskPerTradeScaled;
 
     if (sizing === "sqx_fixed_money") {
+      // Per SQX: il rischio per trade è mmRiskedMoney × scaleFactorBase.
+      // scaleFactorBase scala il contributo giornaliero al rischio target.
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
       riskPerTradeScaled = mmBase * scaleFactorBase;
+    } else if (sizing === "price_scaling_explicit" || sizing === "price_scaling_implicit") {
+      // Per EA price_scaling il rischio $ per trade è COSTANTE by design
+      // (i lotti si autoscalano col prezzo). La mediana in $ assoluti
+      // è la stima corretta: è il valore SL pieno, già depurato da
+      // slippage e indipendente dal capitale backtest e dal prezzo storico.
+      const medianDollar = comp.median_single_trade_loss_dollar
+                           || (comp.median_single_trade_loss_pct / 100.0) * comp.initial_capital
+                           || (comp.p90_single_trade_loss_pct / 100.0) * comp.initial_capital;
+      riskPerTradeScaled = medianDollar * scaleFactorBase;
     } else {
-      // Usa p90 come stima del rischio teorico per trade
+      // fixed_lots: usa p90 come stima del rischio teorico per trade
       const p90Pct = comp.p90_single_trade_loss_pct
                      || comp.max_single_trade_loss_pct
                      || 0;
@@ -297,9 +308,19 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       const mmBase     = comp.mm_risked_money || comp.initial_capital * 0.01;
       paramValue       = Math.round(mmBase * sfEA * 100) / 100;
       const mmOriginal = Math.round(mmBase * scaleFactorBase);
+      // Calcola il rischio per trade effettivo:
+      // mmRiskedMoney × (trade aperti in media al giorno)
+      const eaArr    = comp.daily_pnl_dollar || [];
+      const tradeDays = eaArr.filter(x => x !== 0).length;
+      const totalDays = eaArr.length || 1;
+      const avgTradesPerDay = tradeDays / totalDays;  // frazione di giorni con trade
+      const riskPerTrade = avgTradesPerDay > 0
+        ? Math.round(paramValue / avgTradesPerDay)
+        : Math.round(paramValue);
       note = capped
-        ? "ottimale sarebbe $" + (mmOriginal) + ", cappato a $" + (Math.round(paramValue)) + " per limite rischio/trade"
-        : "da " + (Math.round(mmBase)) + "$ → " + (Math.round(paramValue)) + "$";
+        ? "ottimale sarebbe $" + mmOriginal + ", cappato a $" + Math.round(paramValue) + " per limite rischio/trade"
+        : "da $" + Math.round(mmBase) + " → $" + Math.round(paramValue)
+          + " | rischio per trade ≈ $" + riskPerTrade;
     } else {
       paramName  = "Lots";
       paramValue = Math.round(comp.base_lots * sfEA * 10000) / 10000;
@@ -320,8 +341,24 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
     // Questo è il rischio teorico (SL), non il caso peggiore con slippage
     let effectiveSingleRisk;
     if (sizing === "sqx_fixed_money") {
-      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
-      effectiveSingleRisk = Math.round(mmBase * sfEA);
+      // Rischio per trade = mmRiskedMoney_nuovo (non il giornaliero)
+      // mmRiskedMoney × sfEA è il contributo giornaliero;
+      // il rischio per singolo trade dipende dalla frequenza dell'EA
+      const mmBase2 = comp.mm_risked_money || comp.initial_capital * 0.01;
+      const mmNew   = mmBase2 * sfEA;
+      // giorni attivi / totale = frequenza media
+      const eaArr2     = comp.daily_pnl_dollar || [];
+      const activeDays = eaArr2.filter(x => x !== 0).length;
+      const freq       = activeDays > 0 ? activeDays / eaArr2.length : 1;
+      // Se freq ≈ 1 (trade ogni giorno), mmRiskedMoney ≈ rischio/trade
+      // Se freq < 1 (trade a giorni alterni), il rischio/trade è maggiore
+      effectiveSingleRisk = freq > 0 ? Math.round(mmNew / freq) : Math.round(mmNew);
+    } else if (sizing === "price_scaling_explicit" || sizing === "price_scaling_implicit") {
+      // Per price_scaling: rischio costante = mediana in $ assoluti × scale_factor
+      const medianDollar = comp.median_single_trade_loss_dollar
+                           || (comp.median_single_trade_loss_pct / 100.0) * comp.initial_capital
+                           || (comp.p90_single_trade_loss_pct / 100.0) * comp.initial_capital;
+      effectiveSingleRisk = Math.round(medianDollar * sfEA);
     } else {
       const p90Pct = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 0;
       effectiveSingleRisk = Math.round((p90Pct / 100.0) * comp.initial_capital * sfEA);
@@ -618,6 +655,12 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
     if (sizing === "sqx_fixed_money") {
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
       factor = riskDollar / mmBase;
+    } else if (sizing === "price_scaling_explicit" || sizing === "price_scaling_implicit") {
+      // Rischio $ costante: usa mediana in $ assoluti come stima SL teorico
+      const medianDollar = comp.median_single_trade_loss_dollar
+                           || (comp.median_single_trade_loss_pct / 100.0) * comp.initial_capital
+                           || (comp.p90_single_trade_loss_pct / 100.0) * comp.initial_capital;
+      factor = medianDollar > 0 ? riskDollar / medianDollar : 1.0;
     } else {
       const p90Pct    = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 1.0;
       const p90Dollar = (p90Pct / 100.0) * comp.initial_capital;
@@ -1266,8 +1309,10 @@ function ChallengeSimulator({ firms }) {
         ref_price:                ea.ref_price || 0,
         ref_lots:                 ea.ref_lots || ea.base_lots || 0.01,
         max_single_trade_loss_pct:  ea.max_single_trade_loss_pct || 0,
-        p90_single_trade_loss_pct:  ea.p90_single_trade_loss_pct || 0,
-        daily_pnl_dollar:           dailyDollar,
+        p90_single_trade_loss_pct:    ea.p90_single_trade_loss_pct || 0,
+        median_single_trade_loss_pct: ea.median_single_trade_loss_pct || 0,
+        median_single_trade_loss_dollar: ea.median_single_trade_loss_dollar || 0,
+        daily_pnl_dollar:             dailyDollar,
       }];
       return { dailyDollar, components };
     }
@@ -1295,8 +1340,10 @@ function ChallengeSimulator({ firms }) {
         ref_price:                 ea.ref_price || 0,
         ref_lots:                  ea.ref_lots || ea.base_lots || 0.01,
         max_single_trade_loss_pct:  ea.max_single_trade_loss_pct || 0,
-        p90_single_trade_loss_pct:  ea.p90_single_trade_loss_pct || 0,
-        daily_pnl_dollar:           dailyDollar,
+        p90_single_trade_loss_pct:    ea.p90_single_trade_loss_pct || 0,
+        median_single_trade_loss_pct: ea.median_single_trade_loss_pct || 0,
+        median_single_trade_loss_dollar: ea.median_single_trade_loss_dollar || 0,
+        daily_pnl_dollar:             dailyDollar,
       });
       allSeries.push(dailyDollar);
     }
