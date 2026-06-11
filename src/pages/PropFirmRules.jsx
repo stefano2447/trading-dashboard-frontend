@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { Plus, Trash2, Edit2, Check, X, ChevronDown, ChevronUp,
          Play, TrendingUp, AlertTriangle, Target } from "lucide-react";
-import { api } from "../services/client";
+import { api } from "../api/client";
 import { Card }    from "../components/ui/Card";
 import { Badge }   from "../components/ui/Badge";
 import { Spinner } from "../components/ui/Spinner";
