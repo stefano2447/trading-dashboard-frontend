@@ -801,34 +801,30 @@ export function Portfolios() {
 
   useEffect(() => {
     setLoading(true);
-    Promise.all([
-      api.getBacktestData(),
-      api.getOptimizerData().catch(() => null),  // opzionale — non blocca se mancante
-    ])
-      .then(([backtestData, optimizerData]) => {
-        // Merge dati HRP/CPCV nei portafogli esistenti
-        if (optimizerData?.collections) {
-          const optCollections = optimizerData.collections;
-          const portfolioCollections = backtestData?.portfolio_collections || {};
+    api.getBacktestData()
+      .then(backtestData => {
+        // I dati HRP/CPCV sono inclusi direttamente in portfolio_results.json
+        // sotto la chiave 'hrp_optimizer' — nessuna seconda chiamata API necessaria
+        const optimizerData = backtestData?.hrp_optimizer || {};
+        const optCollections = optimizerData?.collections || {};
+        const portfolioCollections = backtestData?.portfolio_collections || {};
 
+        // Merge: attacca i dati HRP a ogni portafoglio corrispondente
+        if (Object.keys(optCollections).length > 0) {
           Object.keys(portfolioCollections).forEach(collName => {
             const optList = optCollections[collName] || [];
-            // Indicizza per nome portafoglio per lookup O(1)
             const optByName = {};
             optList.forEach(o => { optByName[o.portfolio_name] = o; });
 
             portfolioCollections[collName] = portfolioCollections[collName].map(p => {
               const opt = optByName[p.name];
-              if (!opt) return p;
-              // Attacca i dati HRP come _hrp per non sovrascrivere nulla di esistente
-              return { ...p, _hrp: opt };
+              return opt ? { ...p, _hrp: opt } : p;
             });
           });
         }
 
         setData(backtestData);
-        const collections = backtestData?.portfolio_collections || {};
-        const first = Object.keys(collections)[0];
+        const first = Object.keys(portfolioCollections)[0];
         if (first) setActiveTab(first);
       })
       .catch(e => setError(e.message))
