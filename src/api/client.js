@@ -154,6 +154,12 @@ export const api = {
     return data;
   },
 
+  getOptimizerData: async () => {
+    if (USE_MOCK) return { status: "no_data", collections: {} };
+    const data = await request("/api/backtest/optimizer");
+    return data;
+  },
+
   simulateChallenge: async (params) => {
     if (USE_MOCK) return { results: [], optimal_risk_pct: null, trade_count: 0, n_simulations: 0 };
     return request("/api/backtest/simulate", {

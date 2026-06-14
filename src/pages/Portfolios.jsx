@@ -12,6 +12,36 @@ function fmt(v, dec = 2) {
   return Number(v).toFixed(dec);
 }
 
+// ─── HRP / CPCV helpers ──────────────────────────────────────────────────────
+
+function signalColor(s) {
+  if (s === "GREEN")  return "var(--accent)";
+  if (s === "YELLOW") return "var(--warning)";
+  if (s === "RED")    return "var(--danger)";
+  return "var(--text-muted)";
+}
+
+function signalDot(s) {
+  if (s === "GREEN")  return "🟢";
+  if (s === "YELLOW") return "🟡";
+  if (s === "RED")    return "🔴";
+  return "⚪";
+}
+
+function rankCorrLabel(v) {
+  if (v == null) return "—";
+  if (v >  0.3) return `${fmt(v, 2)} ✓`;
+  if (v > -0.3) return `${fmt(v, 2)} ~`;
+  return `${fmt(v, 2)} ✗`;
+}
+
+function rankCorrColor(v) {
+  if (v == null) return "var(--text-muted)";
+  if (v >  0.3) return "var(--accent)";
+  if (v > -0.3) return "var(--warning)";
+  return "var(--danger)";
+}
+
 function dosColor(v) {
   if (v == null) return "var(--text-muted)";
   if (v < 0.20) return "var(--accent)";
@@ -59,6 +89,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
   const [filterMinRecency, setFilterMinRecency] = useState("");
   const [filterMinUpi,     setFilterMinUpi]     = useState("");
   const [filterMinRf,      setFilterMinRf]      = useState("");
+  const [filterSignal,     setFilterSignal]     = useState("");
 
   function toggleSort(key) {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -71,7 +102,8 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
     .filter(p => !filterNea        || p.ea_list.length === parseInt(filterNea))
     .filter(p => !filterMinRecency || (p.portfolio_recency ?? 0) >= parseFloat(filterMinRecency))
     .filter(p => !filterMinUpi     || (p.portfolio_upi ?? 0)      >= parseFloat(filterMinUpi))
-    .filter(p => !filterMinRf      || (p.portfolio_recovery_factor ?? 0) >= parseFloat(filterMinRf));
+    .filter(p => !filterMinRf      || (p.portfolio_recovery_factor ?? 0) >= parseFloat(filterMinRf))
+    .filter(p => !filterSignal     || (p._hrp?.overall_signal ?? "") === filterSignal);
 
   const sorted = [...filtered].sort((a, b) => {
     const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
@@ -119,6 +151,22 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
             />
           </div>
         ))}
+        {/* Filtro semaforo HRP */}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+          <span style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>HRP Signal</span>
+          <select
+            value={filterSignal}
+            onChange={e => setFilterSignal(e.target.value)}
+            style={{ padding: "0.25rem 0.5rem", fontSize: 12,
+                     background: "var(--bg-elevated)", border: "1px solid var(--border)",
+                     borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }}
+          >
+            <option value="">Tutti</option>
+            <option value="GREEN">🟢 Verde</option>
+            <option value="YELLOW">🟡 Giallo</option>
+            <option value="RED">🔴 Rosso</option>
+          </select>
+        </div>
         <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>
           {sorted.length} / {portfolios.length} portafogli
         </span>
@@ -144,6 +192,12 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
               {th("UI%",      "portfolio_ulcer_index")}
               {th("CAGR%",    "portfolio_cagr_pct")}
               {th("SCORE",    "composite_score")}
+              {th("PBO",      "_hrp_pbo")}
+              {th("RANK CORR","_hrp_rank_corr")}
+              <th style={{ padding: "0.5rem 0.75rem", fontSize: 11, color: "var(--text-muted)",
+                           textAlign: "center" }}>
+                HRP
+              </th>
               <th style={{ padding: "0.5rem 0.75rem", fontSize: 11, color: "var(--text-muted)" }}>
                 EA
               </th>
@@ -267,6 +321,32 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                                fontFamily: "var(--font-data)", fontWeight: 600, color: "var(--accent)" }}>
                     {fmt(p.composite_score, 3)}
                   </td>
+                  {/* PBO */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)" }}>
+                    {p._hrp?.pbo != null
+                      ? <span style={{ color: signalColor(p._hrp.pbo_signal) }}
+                              title={`PBO: % path con Sharpe OOS < Sharpe IS\n< 40% = robusto`}>
+                          {(p._hrp.pbo * 100).toFixed(0)}%
+                        </span>
+                      : <span style={{ color: "var(--text-muted)" }}>—</span>}
+                  </td>
+                  {/* Rank Corr */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)" }}>
+                    {p._hrp?.rank_corr != null
+                      ? <span style={{ color: rankCorrColor(p._hrp.rank_corr) }}
+                              title={`Spearman IS vs OOS\n> +0.3 = IS predice bene OOS\n< -0.3 = overfitting`}>
+                          {rankCorrLabel(p._hrp.rank_corr)}
+                        </span>
+                      : <span style={{ color: "var(--text-muted)" }}>—</span>}
+                  </td>
+                  {/* Semaforo overall */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "center" }}>
+                    {p._hrp?.overall_signal
+                      ? <span title={(p._hrp.notes || []).join("\n")} style={{ cursor: "help", fontSize: 14 }}>
+                          {signalDot(p._hrp.overall_signal)}
+                        </span>
+                      : <span style={{ color: "var(--text-muted)", fontSize: 11 }}>—</span>}
+                  </td>
                   <td style={{ padding: "0.5rem 0.75rem" }}>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
                       {p.ea_list.map(ea => (
@@ -374,6 +454,137 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
           <OverlapSubMatrix eaNames={eaNames} overlapMatrix={overlapMatrix} />
         </div>
       </div>
+
+      {/* Sezione HRP / CPCV */}
+      {portfolio._hrp && (
+        <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid var(--border)" }}>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em",
+                        color: "var(--text-muted)", marginBottom: "0.75rem" }}>
+            HRP OPTIMIZATION + CPCV VALIDATION
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
+
+            {/* Metriche CPCV */}
+            <div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                {[
+                  {
+                    label: "Semaforo complessivo",
+                    value: signalDot(portfolio._hrp.overall_signal) + " " + (portfolio._hrp.overall_signal ?? "N/A"),
+                    color: signalColor(portfolio._hrp.overall_signal),
+                    tip: (portfolio._hrp.notes || []).join(" | "),
+                  },
+                  {
+                    label: "PBO (degradazione IS→OOS)",
+                    value: portfolio._hrp.pbo != null ? (portfolio._hrp.pbo * 100).toFixed(0) + "%" : "—",
+                    color: signalColor(portfolio._hrp.pbo_signal),
+                    tip: "% path in cui Sharpe OOS < Sharpe IS. < 40% = robusto, > 60% = overfitting.",
+                  },
+                  {
+                    label: "Rank Corr IS→OOS",
+                    value: portfolio._hrp.rank_corr != null ? rankCorrLabel(portfolio._hrp.rank_corr) : "—",
+                    color: rankCorrColor(portfolio._hrp.rank_corr),
+                    tip: "Spearman tra Sharpe IS e OOS. > +0.3 = IS predice bene OOS. < -0.3 = overfitting.",
+                  },
+                  {
+                    label: "DSR (Deflated Sharpe Ratio)",
+                    value: portfolio._hrp.dsr != null ? fmt(portfolio._hrp.dsr, 2) : "—",
+                    color: signalColor(portfolio._hrp.dsr_signal),
+                    tip: "Sharpe OOS statisticamente significativo se > 1.0.",
+                  },
+                  {
+                    label: "Sharpe IS medio",
+                    value: portfolio._hrp.sharpe_is != null ? fmt(portfolio._hrp.sharpe_is, 4) : "—",
+                    color: "var(--text-secondary)",
+                    tip: "Sharpe medio sui periodi in-sample (training).",
+                  },
+                  {
+                    label: "Sharpe OOS medio",
+                    value: portfolio._hrp.sharpe_oos != null ? fmt(portfolio._hrp.sharpe_oos, 4) : "—",
+                    color: "var(--text-secondary)",
+                    tip: "Sharpe medio sui periodi out-of-sample (test).",
+                  },
+                  {
+                    label: "N path CPCV",
+                    value: portfolio._hrp.n_paths ?? "—",
+                    color: "var(--text-secondary)",
+                    tip: "Numero di combinazioni IS/OOS testate.",
+                  },
+                  {
+                    label: "Correlazione media (Pearson)",
+                    value: portfolio._hrp.avg_pearson_corr != null ? fmt(portfolio._hrp.avg_pearson_corr, 3) : "—",
+                    color: signalColor(portfolio._hrp.corr_signal),
+                    tip: "Correlazione media tra return giornaliere degli EA.",
+                  },
+                  {
+                    label: "Tail correlation (stress)",
+                    value: portfolio._hrp.tail_corr_avg != null ? fmt(portfolio._hrp.tail_corr_avg, 3) : "—",
+                    color: portfolio._hrp.tail_corr_avg > 0.5 ? "var(--danger)" : "var(--text-secondary)",
+                    tip: `Correlazione nei giorni in cui tutti gli EA perdono (${portfolio._hrp.n_stress_days ?? 0} giorni). Se molto più alta della media = rischio concentrazione in crisi.`,
+                  },
+                ].map(({ label, value, color, tip }) => (
+                  <div key={label} style={{ display: "flex", justifyContent: "space-between",
+                                            alignItems: "center", fontSize: 12 }}>
+                    <span style={{ color: "var(--text-muted)" }} title={tip}>{label}</span>
+                    <span style={{ fontFamily: "var(--font-data)", fontWeight: 600, color }}
+                          title={tip}>
+                      {value}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* HRP weights vs equal-weight */}
+            <div>
+              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+                Pesi HRP suggeriti vs Equal-Weight
+              </div>
+              {portfolio._hrp.hrp_weights && (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                  <thead>
+                    <tr style={{ borderBottom: "1px solid var(--border)" }}>
+                      <th style={{ textAlign: "left",  padding: "0.3rem 0.4rem", color: "var(--text-muted)", fontWeight: 600, fontSize: 10 }}>EA</th>
+                      <th style={{ textAlign: "right", padding: "0.3rem 0.4rem", color: "var(--text-muted)", fontWeight: 600, fontSize: 10 }}>HRP %</th>
+                      <th style={{ textAlign: "right", padding: "0.3rem 0.4rem", color: "var(--text-muted)", fontWeight: 600, fontSize: 10 }}>EQ %</th>
+                      <th style={{ textAlign: "right", padding: "0.3rem 0.4rem", color: "var(--text-muted)", fontWeight: 600, fontSize: 10 }}>DIFF</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {Object.entries(portfolio._hrp.hrp_weights).map(([ea, w]) => {
+                      const eq   = portfolio._hrp.equal_weights?.[ea] ?? (1 / portfolio.ea_list.length);
+                      const diff = w - eq;
+                      return (
+                        <tr key={ea} style={{ borderBottom: "1px solid var(--border)" }}>
+                          <td style={{ padding: "0.3rem 0.4rem", color: "var(--text-primary)" }}>{ea}</td>
+                          <td style={{ padding: "0.3rem 0.4rem", textAlign: "right",
+                                       fontFamily: "var(--font-data)", fontWeight: 600,
+                                       color: "var(--accent)" }}>
+                            {(w * 100).toFixed(1)}%
+                          </td>
+                          <td style={{ padding: "0.3rem 0.4rem", textAlign: "right",
+                                       fontFamily: "var(--font-data)", color: "var(--text-muted)" }}>
+                            {(eq * 100).toFixed(1)}%
+                          </td>
+                          <td style={{ padding: "0.3rem 0.4rem", textAlign: "right",
+                                       fontFamily: "var(--font-data)",
+                                       color: diff > 0.02 ? "var(--accent)" : diff < -0.02 ? "var(--warning)" : "var(--text-muted)" }}>
+                            {diff > 0 ? "+" : ""}{(diff * 100).toFixed(1)}%
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              )}
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.5rem" }}>
+                HRP riduce il peso degli EA correlati tra loro e aumenta quello degli EA unici nel portafoglio.
+              </div>
+            </div>
+
+          </div>
+        </div>
+      )}
 
       {/* Warning EA con R:R < 1 */}
       {eaPool && eaNames.some(name => eaPool[name]?.avg_rr < 1) && (
@@ -590,10 +801,33 @@ export function Portfolios() {
 
   useEffect(() => {
     setLoading(true);
-    api.getBacktestData()
-      .then(d => {
-        setData(d);
-        const collections = d?.portfolio_collections || {};
+    Promise.all([
+      api.getBacktestData(),
+      api.getOptimizerData().catch(() => null),  // opzionale — non blocca se mancante
+    ])
+      .then(([backtestData, optimizerData]) => {
+        // Merge dati HRP/CPCV nei portafogli esistenti
+        if (optimizerData?.collections) {
+          const optCollections = optimizerData.collections;
+          const portfolioCollections = backtestData?.portfolio_collections || {};
+
+          Object.keys(portfolioCollections).forEach(collName => {
+            const optList = optCollections[collName] || [];
+            // Indicizza per nome portafoglio per lookup O(1)
+            const optByName = {};
+            optList.forEach(o => { optByName[o.portfolio_name] = o; });
+
+            portfolioCollections[collName] = portfolioCollections[collName].map(p => {
+              const opt = optByName[p.name];
+              if (!opt) return p;
+              // Attacca i dati HRP come _hrp per non sovrascrivere nulla di esistente
+              return { ...p, _hrp: opt };
+            });
+          });
+        }
+
+        setData(backtestData);
+        const collections = backtestData?.portfolio_collections || {};
         const first = Object.keys(collections)[0];
         if (first) setActiveTab(first);
       })
