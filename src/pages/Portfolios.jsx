@@ -103,7 +103,14 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
     .filter(p => !filterMinRecency || (p.portfolio_recency ?? 0) >= parseFloat(filterMinRecency))
     .filter(p => !filterMinUpi     || (p.portfolio_upi ?? 0)      >= parseFloat(filterMinUpi))
     .filter(p => !filterMinRf      || (p.portfolio_recovery_factor ?? 0) >= parseFloat(filterMinRf))
-    .filter(p => !filterSignal     || (p._hrp?.overall_signal ?? "") === filterSignal);
+    .filter(p => !filterSignal     || (
+      [p._hrp?.dr_signal, p._hrp?.enb_signal, p._hrp?.corr_signal]
+        .filter(s => s && s !== 'N/A')
+        .reduce((worst, s) =>
+          s === 'RED' ? 'RED' :
+          s === 'YELLOW' && worst !== 'RED' ? 'YELLOW' : worst,
+        'GREEN') === filterSignal
+    ));
 
   const sorted = [...filtered].sort((a, b) => {
     const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
@@ -153,7 +160,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
         ))}
         {/* Filtro semaforo HRP */}
         <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-          <span style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>HRP Signal</span>
+          <span style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>DIV Signal</span>
           <select
             value={filterSignal}
             onChange={e => setFilterSignal(e.target.value)}
@@ -192,15 +199,11 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
               {th("UI%",      "portfolio_ulcer_index")}
               {th("CAGR%",    "portfolio_cagr_pct")}
               {th("SCORE",    "composite_score")}
-              {th("PBO",      "_hrp_pbo")}
-              {th("RANK CORR","_hrp_rank_corr")}
-              <th style={{ padding: "0.5rem 0.75rem", fontSize: 11, color: "var(--text-muted)",
-                           textAlign: "center" }}>
-                HRP
-              </th>
-              <th style={{ padding: "0.5rem 0.75rem", fontSize: 11, color: "var(--text-muted)" }}>
-                EA
-              </th>
+              {th("DR",       "_hrp_dr")}
+              {th("ENB%",     "_hrp_enb")}
+              <th style={{ padding: "0.5rem 0.75rem", fontSize: 11,
+                           color: "var(--text-muted)", textAlign: "center" }}>DIV</th>
+              <th style={{ padding: "0.5rem 0.75rem", fontSize: 11, color: "var(--text-muted)" }}>EA</th>
             </tr>
           </thead>
           <tbody>
@@ -321,29 +324,46 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                                fontFamily: "var(--font-data)", fontWeight: 600, color: "var(--accent)" }}>
                     {fmt(p.composite_score, 3)}
                   </td>
-                  {/* PBO */}
+
+                  {/* DR — Diversification Ratio */}
                   <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)" }}>
-                    {p._hrp?.pbo != null
-                      ? <span style={{ color: signalColor(p._hrp.pbo_signal) }}
-                              title={`PBO: % path con Sharpe OOS < Sharpe IS\n< 40% = robusto`}>
-                          {(p._hrp.pbo * 100).toFixed(0)}%
+                    {p._hrp?.diversification_ratio != null
+                      ? <span style={{ color: signalColor(p._hrp.dr_signal) }}
+                              title={`Diversification Ratio = vol_media_ponderata / vol_portafoglio\n≥1.5 ottimo · ≥1.2 buono · <1.2 scarso\nMisura quanto la combinazione degli EA riduce il rischio`}>
+                          {fmt(p._hrp.diversification_ratio, 2)}x
                         </span>
                       : <span style={{ color: "var(--text-muted)" }}>—</span>}
                   </td>
-                  {/* Rank Corr */}
+
+                  {/* ENB% — Effective Number of Bets ratio */}
                   <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)" }}>
-                    {p._hrp?.rank_corr != null
-                      ? <span style={{ color: rankCorrColor(p._hrp.rank_corr) }}
-                              title={`Spearman IS vs OOS\n> +0.3 = IS predice bene OOS\n< -0.3 = overfitting`}>
-                          {rankCorrLabel(p._hrp.rank_corr)}
+                    {p._hrp?.enb_ratio != null
+                      ? <span style={{ color: signalColor(p._hrp.enb_signal) }}
+                              title={`Effective Number of Bets / N EA = ${p._hrp.effective_n_bets?.toFixed(1)} / ${p.ea_list.length}\nScommesse indipendenti reali sul totale degli EA\n≥50% ben diversificato · <30% concentrato su pochi fattori`}>
+                          {(p._hrp.enb_ratio * 100).toFixed(0)}%
                         </span>
                       : <span style={{ color: "var(--text-muted)" }}>—</span>}
                   </td>
-                  {/* Semaforo overall */}
+
+                  {/* Semaforo diversificazione compatto */}
                   <td style={{ padding: "0.5rem 0.75rem", textAlign: "center" }}>
-                    {p._hrp?.overall_signal
-                      ? <span title={(p._hrp.notes || []).join("\n")} style={{ cursor: "help", fontSize: 14 }}>
-                          {signalDot(p._hrp.overall_signal)}
+                    {p._hrp
+                      ? <span title={[
+                            p._hrp.dr_signal    !== 'N/A' ? `DR: ${p._hrp.dr_signal}`    : null,
+                            p._hrp.enb_signal   !== 'N/A' ? `ENB: ${p._hrp.enb_signal}`  : null,
+                            p._hrp.corr_signal  !== 'N/A' ? `Corr: ${p._hrp.corr_signal}`: null,
+                            p._hrp.delta_corr != null ? `ΔCorr stress: ${p._hrp.delta_corr > 0 ? '+' : ''}${p._hrp.delta_corr?.toFixed(3)}` : null,
+                          ].filter(Boolean).join('\n')}
+                          style={{ cursor: "help", fontSize: 14 }}>
+                          {signalDot(
+                            // Semaforo basato su DR + ENB (ignora PBO/RankCorr per coerenza)
+                            [p._hrp.dr_signal, p._hrp.enb_signal, p._hrp.corr_signal]
+                              .filter(s => s && s !== 'N/A')
+                              .reduce((worst, s) =>
+                                s === 'RED' ? 'RED' :
+                                s === 'YELLOW' && worst !== 'RED' ? 'YELLOW' : worst,
+                              'GREEN')
+                          )}
                         </span>
                       : <span style={{ color: "var(--text-muted)", fontSize: 11 }}>—</span>}
                   </td>
