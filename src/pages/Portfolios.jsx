@@ -460,13 +460,17 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
         <div style={{ marginTop: "1.25rem", paddingTop: "1rem", borderTop: "1px solid var(--border)" }}>
           <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em",
                         color: "var(--text-muted)", marginBottom: "0.75rem" }}>
-            HRP OPTIMIZATION + CPCV VALIDATION
+            HRP OPTIMIZATION + CPCV VALIDATION + DIVERSIFICATION METRICS
           </div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1.5rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "1.25rem" }}>
 
-            {/* Metriche CPCV */}
+            {/* Colonna 1: Metriche CPCV */}
             <div>
-              <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)",
+                            letterSpacing: "0.06em", marginBottom: "0.5rem" }}>
+                CPCV / STABILITÀ IS→OOS
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
                 {[
                   {
                     label: "Semaforo complessivo",
@@ -487,22 +491,22 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
                     tip: "Spearman tra Sharpe IS e OOS. > +0.3 = IS predice bene OOS. < -0.3 = overfitting.",
                   },
                   {
-                    label: "DSR (Deflated Sharpe Ratio)",
+                    label: "DSR",
                     value: portfolio._hrp.dsr != null ? fmt(portfolio._hrp.dsr, 2) : "—",
                     color: signalColor(portfolio._hrp.dsr_signal),
-                    tip: "Sharpe OOS statisticamente significativo se > 1.0.",
+                    tip: "Deflated Sharpe Ratio: Sharpe OOS statisticamente significativo se > 1.0.",
                   },
                   {
                     label: "Sharpe IS medio",
                     value: portfolio._hrp.sharpe_is != null ? fmt(portfolio._hrp.sharpe_is, 4) : "—",
                     color: "var(--text-secondary)",
-                    tip: "Sharpe medio sui periodi in-sample (training).",
+                    tip: "Sharpe medio sui periodi in-sample.",
                   },
                   {
                     label: "Sharpe OOS medio",
                     value: portfolio._hrp.sharpe_oos != null ? fmt(portfolio._hrp.sharpe_oos, 4) : "—",
                     color: "var(--text-secondary)",
-                    tip: "Sharpe medio sui periodi out-of-sample (test).",
+                    tip: "Sharpe medio sui periodi out-of-sample.",
                   },
                   {
                     label: "N path CPCV",
@@ -510,35 +514,97 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
                     color: "var(--text-secondary)",
                     tip: "Numero di combinazioni IS/OOS testate.",
                   },
-                  {
-                    label: "Correlazione media (Pearson)",
-                    value: portfolio._hrp.avg_pearson_corr != null ? fmt(portfolio._hrp.avg_pearson_corr, 3) : "—",
-                    color: signalColor(portfolio._hrp.corr_signal),
-                    tip: "Correlazione media tra return giornaliere degli EA.",
-                  },
-                  {
-                    label: "Tail correlation (stress)",
-                    value: portfolio._hrp.tail_corr_avg != null ? fmt(portfolio._hrp.tail_corr_avg, 3) : "—",
-                    color: portfolio._hrp.tail_corr_avg > 0.5 ? "var(--danger)" : "var(--text-secondary)",
-                    tip: `Correlazione nei giorni in cui tutti gli EA perdono (${portfolio._hrp.n_stress_days ?? 0} giorni). Se molto più alta della media = rischio concentrazione in crisi.`,
-                  },
                 ].map(({ label, value, color, tip }) => (
                   <div key={label} style={{ display: "flex", justifyContent: "space-between",
                                             alignItems: "center", fontSize: 12 }}>
-                    <span style={{ color: "var(--text-muted)" }} title={tip}>{label}</span>
-                    <span style={{ fontFamily: "var(--font-data)", fontWeight: 600, color }}
-                          title={tip}>
-                      {value}
-                    </span>
+                    <span style={{ color: "var(--text-muted)", fontSize: 11 }} title={tip}>{label}</span>
+                    <span style={{ fontFamily: "var(--font-data)", fontWeight: 600, color, fontSize: 12 }}
+                          title={tip}>{value}</span>
                   </div>
                 ))}
               </div>
             </div>
 
-            {/* HRP weights vs equal-weight */}
+            {/* Colonna 2: Metriche diversificazione */}
             <div>
-              <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: "0.5rem" }}>
-                Pesi HRP suggeriti vs Equal-Weight
+              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)",
+                            letterSpacing: "0.06em", marginBottom: "0.5rem" }}>
+                DIVERSIFICAZIONE STRUTTURALE
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "0.45rem" }}>
+                {[
+                  {
+                    label: "Diversification Ratio",
+                    value: portfolio._hrp.diversification_ratio != null
+                      ? fmt(portfolio._hrp.diversification_ratio, 2) + "x"
+                      : "—",
+                    color: signalColor(portfolio._hrp.dr_signal),
+                    tip: "DR = vol_media_ponderata / vol_portafoglio. > 1.5 = ottimo. Misura quanto la combinazione riduce il rischio.",
+                  },
+                  {
+                    label: "Effective N Bets",
+                    value: portfolio._hrp.effective_n_bets != null
+                      ? `${fmt(portfolio._hrp.effective_n_bets, 1)} / ${portfolio.ea_list.length}`
+                      : "—",
+                    color: signalColor(portfolio._hrp.enb_signal),
+                    tip: "Scommesse indipendenti reali (Meucci). Se molto < N EA, stai raddoppiando esposizioni.",
+                  },
+                  {
+                    label: "ENB ratio",
+                    value: portfolio._hrp.enb_ratio != null
+                      ? (portfolio._hrp.enb_ratio * 100).toFixed(0) + "%"
+                      : "—",
+                    color: signalColor(portfolio._hrp.enb_signal),
+                    tip: "ENB / N EA. > 50% = ben diversificato, < 30% = concentrato su pochi fattori.",
+                  },
+                  {
+                    label: "Herfindahl Index (HHI)",
+                    value: portfolio._hrp.herfindahl_index != null
+                      ? fmt(portfolio._hrp.herfindahl_index, 4)
+                      : "—",
+                    color: signalColor(portfolio._hrp.hhi_signal),
+                    tip: "Concentrazione dei pesi HRP. Minimo = 1/N (equal weight). Più basso = meglio.",
+                  },
+                  {
+                    label: "Delta Corr (stress)",
+                    value: portfolio._hrp.delta_corr != null
+                      ? (portfolio._hrp.delta_corr > 0 ? "+" : "") + fmt(portfolio._hrp.delta_corr, 3)
+                      : "—",
+                    color: signalColor(portfolio._hrp.delta_corr_signal),
+                    tip: "Corr_stress - Corr_media. Se > 0.30: la diversificazione si rompe in crisi.",
+                  },
+                  {
+                    label: "Correlazione media",
+                    value: portfolio._hrp.avg_pearson_corr != null
+                      ? fmt(portfolio._hrp.avg_pearson_corr, 3)
+                      : "—",
+                    color: signalColor(portfolio._hrp.corr_signal),
+                    tip: "Correlazione Pearson media tra return giornaliere degli EA.",
+                  },
+                  {
+                    label: "Tail corr (giorni stress)",
+                    value: portfolio._hrp.tail_corr_avg != null
+                      ? `${fmt(portfolio._hrp.tail_corr_avg, 3)} (${portfolio._hrp.n_stress_days ?? 0}gg)`
+                      : "—",
+                    color: portfolio._hrp.tail_corr_avg > 0.5 ? "var(--danger)" : "var(--text-secondary)",
+                    tip: "Correlazione nei giorni in cui tutti gli EA perdono insieme.",
+                  },
+                ].map(({ label, value, color, tip }) => (
+                  <div key={label} style={{ display: "flex", justifyContent: "space-between",
+                                            alignItems: "center", fontSize: 12 }}>
+                    <span style={{ color: "var(--text-muted)", fontSize: 11 }} title={tip}>{label}</span>
+                    <span style={{ fontFamily: "var(--font-data)", fontWeight: 600, color, fontSize: 12 }}
+                          title={tip}>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Colonna 3: HRP weights vs equal-weight */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "var(--text-muted)",
+                            letterSpacing: "0.06em", marginBottom: "0.5rem" }}>
+                PESI HRP vs EQUAL-WEIGHT
               </div>
               {portfolio._hrp.hrp_weights && (
                 <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
