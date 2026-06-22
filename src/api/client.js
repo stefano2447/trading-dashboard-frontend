@@ -63,10 +63,12 @@ export const api = {
     return data.snapshots || [];
   },
 
-  togglePause: async (accountId) => {
-    if (USE_MOCK) return { status: "ok" };
-    return request(`/api/accounts/${accountId}/pause`, { method: "POST" });
-  },
+setPause: (accountId, paused) =>
+  fetch(`/api/accounts/${accountId}/pause`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "X-API-Key": API_KEY },
+    body: JSON.stringify({ pause_trading: paused }),
+  }).then(r => r.json()),
 
   closeAll: async (accountId) => {
     if (USE_MOCK) return { status: "ok" };

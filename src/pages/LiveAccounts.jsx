@@ -210,7 +210,7 @@ function ConfigModal({ account, onClose, onSave }) {
 
 // ─── Card singolo conto ───────────────────────────────────────────────────────
 function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete, onToggleHide }) {
-  const [paused, setPaused]               = useState(false);
+  const [paused, setPaused] = useState(account.pause_trading ?? false);
   const [confirming, setConfirming]       = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showPositions, setShowPositions] = useState(true);
@@ -480,7 +480,12 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
       {/* Pulsanti azione */}
       <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
         <button
-          onClick={() => { setPaused(p => !p); onTogglePause(account.id); }}
+          onClick={() => {
+  const newPaused = !paused;
+  setPaused(newPaused);
+  onTogglePause(account.id, newPaused);
+}}
+
           style={{
             flex: 1, padding: "0.5rem", fontSize: 12,
             borderRadius: "var(--radius-sm)",
@@ -708,7 +713,7 @@ export function LiveAccounts() {
                   <AccountCard key={account.id} account={account}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
-                    onTogglePause={id => api.togglePause(id)}
+                    onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
                     onDelete={async (id) => { await api.deleteAccount(id); setAccounts(prev => prev.filter(a => a.id !== id)); }}
                   />
@@ -729,7 +734,7 @@ export function LiveAccounts() {
                   <AccountCard key={account.id} account={account}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
-                    onTogglePause={id => api.togglePause(id)}
+                    onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
                     onDelete={async (id) => { await api.deleteAccount(id); setAccounts(prev => prev.filter(a => a.id !== id)); }}
                   />
@@ -750,7 +755,7 @@ export function LiveAccounts() {
                   <AccountCard key={account.id} account={account}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
-                    onTogglePause={id => api.togglePause(id)}
+                    onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
                     onDelete={async (id) => { await api.deleteAccount(id); setAccounts(prev => prev.filter(a => a.id !== id)); }}
                   />
