@@ -47,6 +47,27 @@ function sortAccounts(accounts) {
   return [...accounts].sort((a, b) => (order[a.account_type] ?? 3) - (order[b.account_type] ?? 3));
 }
 
+// Offline se non arriva segnale da più di 11 minuti (copre sia 1min che 5min interval EA)
+const OFFLINE_THRESHOLD_MS = 11 * 60 * 1000;
+
+function isOffline(account) {
+  if (!account.snapshot_time) return false;
+  const lastSeen = new Date(account.snapshot_time);
+  if (isNaN(lastSeen.getTime())) return false;
+  return (Date.now() - lastSeen.getTime()) > OFFLINE_THRESHOLD_MS;
+}
+
+function fmtLastSeen(account) {
+  if (!account.snapshot_time) return null;
+  const lastSeen = new Date(account.snapshot_time);
+  if (isNaN(lastSeen.getTime())) return null;
+  const diffMin = Math.floor((Date.now() - lastSeen.getTime()) / 60000);
+  if (diffMin < 1)  return "< 1 min fa";
+  if (diffMin < 60) return `${diffMin} min fa`;
+  const diffH = Math.floor(diffMin / 60);
+  return `${diffH}h ${diffMin % 60}min fa`;
+}
+
 // ─── Progress bar ─────────────────────────────────────────────────────────────
 function ProgressBar({ pct, color, label, sublabel }) {
   return (
@@ -216,6 +237,8 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
   const [showPositions, setShowPositions] = useState(true);
 
   const isProp       = account.account_type === "Prop";
+  const offline      = isOffline(account);
+  const lastSeenStr  = fmtLastSeen(account);
   const ddPct        = ddPercent(account);
   const dailyPct     = dailyDdPercent(account);
   const tgtPct       = targetPercent(account);
@@ -232,8 +255,13 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
                   : account.account_type === "Live"  ? "var(--accent)"
                   : "var(--text-muted)";
 
-  const cardBg     = isProp ? "linear-gradient(135deg, var(--bg-surface) 0%, rgba(224,169,82,0.04) 100%)" : "var(--bg-surface)";
-  const cardBorder = isProp ? "var(--warning)" : !isConfigured ? "var(--warning)" : "var(--border)";
+  const cardBg     = offline      ? "linear-gradient(135deg, rgba(224,82,82,0.08) 0%, rgba(224,82,82,0.03) 100%)"
+                   : isProp       ? "linear-gradient(135deg, var(--bg-surface) 0%, rgba(224,169,82,0.04) 100%)"
+                   : "var(--bg-surface)";
+  const cardBorder = offline      ? "var(--danger)"
+                   : isProp       ? "var(--warning)"
+                   : !isConfigured ? "var(--warning)"
+                   : "var(--border)";
 
   return (
     <div style={{
@@ -242,6 +270,19 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
       display: "flex", flexDirection: "column", gap: "1rem",
       boxShadow: isProp ? "0 0 20px rgba(224,169,82,0.05)" : "none",
     }}>
+
+      {/* Banner offline */}
+      {offline && (
+        <div style={{
+          background: "rgba(224,82,82,0.12)", border: "1px solid var(--danger)",
+          borderRadius: "var(--radius-sm)", padding: "0.4rem 0.75rem",
+          fontSize: 11, color: "var(--danger)",
+          display: "flex", alignItems: "center", gap: 6,
+        }}>
+          <span style={{ fontSize: 14 }}>📡</span>
+          EA offline{lastSeenStr ? ` — ultimo segnale ${lastSeenStr}` : ""}
+        </div>
+      )}
 
       {/* Banner non configurato */}
       {!isConfigured && (
@@ -286,11 +327,11 @@ function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <div style={{
               width: 7, height: 7, borderRadius: "50%",
-              background: paused ? "var(--warning)" : "var(--accent)",
-              boxShadow: paused ? "0 0 6px var(--warning)" : "0 0 6px var(--accent)",
+              background: offline ? "var(--danger)" : paused ? "var(--warning)" : "var(--accent)",
+              boxShadow: offline ? "0 0 6px var(--danger)" : paused ? "0 0 6px var(--warning)" : "0 0 6px var(--accent)",
             }} />
             <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-              {paused ? "In pausa" : "Live"}
+              {offline ? "Offline" : paused ? "In pausa" : "Live"}
             </span>
           </div>
           <button onClick={() => onConfigure(account)} style={{
@@ -615,6 +656,7 @@ export function LiveAccounts() {
   );
   const hiddenCount    = hiddenIds.filter(id => accounts.some(a => a.id === id)).length;
   const activeAccounts = accounts.filter(a => !hiddenIds.includes(a.id));
+  const offlineCount   = activeAccounts.filter(a => isOffline(a)).length;
   const totalBalance   = activeAccounts.reduce((s, a) => s + (a.balance   || 0), 0);
   const totalEquity    = activeAccounts.reduce((s, a) => s + (a.equity    || 0), 0);
   const totalBonus     = activeAccounts.reduce((s, a) => s + (a.bonus_credit || 0), 0);
@@ -631,6 +673,7 @@ export function LiveAccounts() {
           <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 4 }}>Conti Live</h1>
           <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
             {activeAccounts.length} conti attivi · aggiornato alle {lastUpdate.toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" })}
+            {offlineCount > 0 && <span style={{ marginLeft: 8, color: "var(--danger)", fontWeight: 600 }}>· {offlineCount} offline ⚠</span>}
             {hiddenCount > 0 && <span style={{ marginLeft: 8 }}>· {hiddenCount} nascosti</span>}
           </p>
         </div>
