@@ -52,9 +52,9 @@ export const api = {
   },
 
   getAccounts: async () => {
-    if (USE_MOCK) return mockAccounts;
+    if (USE_MOCK) return { accounts: mockAccounts, server_time: null };
     const data = await request("/api/accounts");
-    return data.accounts;
+    return { accounts: data.accounts, server_time: data.server_time ? new Date(data.server_time) : null };
   },
 
   getAccountSnapshots: async (accountId) => {

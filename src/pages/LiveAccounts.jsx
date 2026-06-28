@@ -50,18 +50,21 @@ function sortAccounts(accounts) {
 // Offline se non arriva segnale da più di 11 minuti (copre sia 1min che 5min interval EA)
 const OFFLINE_THRESHOLD_MS = 11 * 60 * 1000;
 
-function isOffline(account) {
-  if (!account.snapshot_time) return false;
-  const lastSeen = new Date(account.snapshot_time);
+function isOffline(account, serverNow) {
+  if (!account.last_update) return false;
+  const lastSeen  = new Date(account.last_update);
   if (isNaN(lastSeen.getTime())) return false;
-  return (Date.now() - lastSeen.getTime()) > OFFLINE_THRESHOLD_MS;
+  const reference = serverNow ?? new Date();
+  const diffMs    = reference.getTime() - lastSeen.getTime();
+  return diffMs > OFFLINE_THRESHOLD_MS;
 }
 
-function fmtLastSeen(account) {
-  if (!account.snapshot_time) return null;
-  const lastSeen = new Date(account.snapshot_time);
+function fmtLastSeen(account, serverNow) {
+  if (!account.last_update) return null;
+  const lastSeen  = new Date(account.last_update);
   if (isNaN(lastSeen.getTime())) return null;
-  const diffMin = Math.floor((Date.now() - lastSeen.getTime()) / 60000);
+  const reference = serverNow ?? new Date();
+  const diffMin   = Math.floor((reference.getTime() - lastSeen.getTime()) / 60000);
   if (diffMin < 1)  return "< 1 min fa";
   if (diffMin < 60) return `${diffMin} min fa`;
   const diffH = Math.floor(diffMin / 60);
@@ -230,15 +233,15 @@ function ConfigModal({ account, onClose, onSave }) {
 }
 
 // ─── Card singolo conto ───────────────────────────────────────────────────────
-function AccountCard({ account, onConfigure, onCloseAll, onTogglePause, onDelete, onToggleHide }) {
+function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePause, onDelete, onToggleHide }) {
   const [paused, setPaused] = useState(account.pause_trading ?? false);
   const [confirming, setConfirming]       = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showPositions, setShowPositions] = useState(true);
 
   const isProp       = account.account_type === "Prop";
-  const offline      = isOffline(account);
-  const lastSeenStr  = fmtLastSeen(account);
+  const offline      = isOffline(account, serverNow);
+  const lastSeenStr  = fmtLastSeen(account, serverNow);
   const ddPct        = ddPercent(account);
   const dailyPct     = dailyDdPercent(account);
   const tgtPct       = targetPercent(account);
@@ -600,6 +603,7 @@ export function LiveAccounts() {
   const [configuringAccount, setConfiguringAccount] = useState(null);
   const [lastUpdate, setLastUpdate]                 = useState(new Date());
   const [showHidden, setShowHidden]                 = useState(false);
+  const [serverNow, setServerNow]                   = useState(null);
 
   const [hiddenIds, setHiddenIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem("hidden_accounts") || "[]"); }
@@ -619,8 +623,9 @@ export function LiveAccounts() {
   }
 
   function loadAccounts() {
-    api.getAccounts().then(data => {
-      setAccounts(data);
+    api.getAccounts().then(({ accounts, server_time }) => {
+      setAccounts(accounts);
+      setServerNow(server_time);
       setLoading(false);
       setLastUpdate(new Date());
     });
@@ -656,7 +661,7 @@ export function LiveAccounts() {
   );
   const hiddenCount    = hiddenIds.filter(id => accounts.some(a => a.id === id)).length;
   const activeAccounts = accounts.filter(a => !hiddenIds.includes(a.id));
-  const offlineCount   = activeAccounts.filter(a => isOffline(a)).length;
+  const offlineCount   = activeAccounts.filter(a => isOffline(a, serverNow)).length;
   const totalBalance   = activeAccounts.reduce((s, a) => s + (a.balance   || 0), 0);
   const totalEquity    = activeAccounts.reduce((s, a) => s + (a.equity    || 0), 0);
   const totalBonus     = activeAccounts.reduce((s, a) => s + (a.bonus_credit || 0), 0);
@@ -753,7 +758,7 @@ export function LiveAccounts() {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
                 {visibleAccounts.filter(a => a.account_type === "Prop").map(account => (
-                  <AccountCard key={account.id} account={account}
+                  <AccountCard key={account.id} account={account} serverNow={serverNow}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
@@ -774,7 +779,7 @@ export function LiveAccounts() {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
                 {visibleAccounts.filter(a => a.account_type === "Live").map(account => (
-                  <AccountCard key={account.id} account={account}
+                  <AccountCard key={account.id} account={account} serverNow={serverNow}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
@@ -795,7 +800,7 @@ export function LiveAccounts() {
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
                 {visibleAccounts.filter(a => a.account_type !== "Prop" && a.account_type !== "Live").map(account => (
-                  <AccountCard key={account.id} account={account}
+                  <AccountCard key={account.id} account={account} serverNow={serverNow}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
