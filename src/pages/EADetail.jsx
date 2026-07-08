@@ -326,7 +326,8 @@ export function EADetail() {
     const maxDD  = calcMaxDD(trades);
     const avgLots = trades.reduce((s, t) => s + (t.lots || 0.01), 0) / trades.length;
     const months  = monthsActive(trades[0]?.open_time);
-    const calmar  = months > 0 && maxDD > 0 ? (total * (12 / months)) / maxDD : null;
+    // Floor a 3 mesi per evitare estrapolazioni esplosive su storici corti (coerente col backend)
+    const calmar  = months > 0 && maxDD > 0 ? (total * (12 / Math.max(months, 3))) / maxDD : null;
     const retDD   = maxDD > 0 ? total / maxDD : null;
     const maxCL   = calcMaxConsecLoss(trades);
 
@@ -513,14 +514,18 @@ export function EADetail() {
                   <span style={{ textAlign: "right" }}>LIVE</span>
                   <span style={{ textAlign: "right" }}>DELTA</span>
                 </div>
-                <CompareRow label="Calmar Ratio" live={metrics.calmar}  backtest={btData.calmar} />
+                <CompareRow label="Ret / MaxDD" live={metrics.retDD}  backtest={btData.ret_dd} />
+                <CompareRow label="Calmar (annualizzato)" live={metrics.calmar} backtest={btData.calmar} />
                 <CompareRow label="Win Rate %"   live={metrics.winRate} backtest={btData.win_rate} />
                 <CompareRow label="Avg RR"       live={metrics.avgRR}   backtest={btData.avg_rr} />
                 <p style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.75rem" }}>
                   Backtest: {btData.period || "—"} · {btData.n_trades ?? "—"} trade &nbsp;|&nbsp;
                   Live: {trades.length} trade dal {fmtDate(metrics.firstTrade)}.
-                  Max DD non incluso nel confronto diretto: nel backtest è in % sul capitale iniziale
-                  ({fmt(btData.max_dd_pct)}%), nel live è normalizzato a 0.01 lotti — scale diverse, non comparabili 1:1.
+                  "Ret/MaxDD" è il rapporto tra rendimento totale e drawdown massimo, <b>non annualizzato</b>:
+                  stessa grandezza per live e backtest (a differenza del Calmar, che sui pochi mesi di storico live
+                  può risultare gonfiato dall'estrapolazione annuale) — usalo come confronto principale di coerenza sul DD.
+                  Il valore backtest è una stima derivata da Calmar × durata del backtest.
+                  Max DD grezzo: backtest {fmt(btData.max_dd_pct)}% sul capitale iniziale, live {fmt(metrics.maxDD)} (normalizzato a 0.01 lotti) — non confrontabili direttamente in valore assoluto, per questo si usa il rapporto Ret/MaxDD sopra.
                 </p>
               </>
             )}
