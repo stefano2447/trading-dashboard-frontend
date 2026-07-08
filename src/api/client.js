@@ -127,7 +127,7 @@ setPause: async (accountId, paused) => {
   if (USE_MOCK) return { status: "ok" };
   return request(`/api/accounts/${accountId}`, { method: "DELETE" });
   },
-  
+
   getNews: async (week = "current") => {
   if (USE_MOCK) return [];
   const data = await request(`/api/news?week=${week}`);
@@ -150,7 +150,7 @@ setPause: async (accountId, paused) => {
     });
   },
 
-
+  // ─── Backtest ───────────────────────────────────────────────────────────
   getBacktestData: async () => {
     if (USE_MOCK) return { status: "no_data", ea_pool: {}, portfolio_collections: {} };
     const data = await request("/api/backtest/data");
@@ -169,5 +169,23 @@ setPause: async (accountId, paused) => {
       method: "POST",
       body: JSON.stringify(params),
     });
+  },
+
+  // Suggerisce i migliori candidati di backtest per un EA live, per similarità nome
+  suggestBacktestMatch: async (eaName) => {
+    if (USE_MOCK) return { candidates: [] };
+    return request(`/api/backtest/match/${encodeURIComponent(eaName)}`);
+  },
+
+  // Metriche di backtest per un ea_pool key specifico, da confrontare col live
+  getBacktestReference: async (backtestRef) => {
+    if (USE_MOCK) return null;
+    return request(`/api/backtest/compare/${encodeURIComponent(backtestRef)}`);
+  },
+
+  // Tutti i nomi disponibili nell'ea_pool, per il dropdown manuale
+  listBacktestNames: async () => {
+    if (USE_MOCK) return { names: [] };
+    return request(`/api/backtest/list-names`);
   },
 };

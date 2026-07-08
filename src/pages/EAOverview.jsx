@@ -303,9 +303,9 @@ export function EAOverview() {
   if (score === null || score === undefined) {
     const label =
       status === "insufficient_recent"
-        ? `⚪ < 10 trade recenti (${details.recent_trades || 0})`
+        ? `⚪ < 3 trade recenti (${details.recent_trades || 0})`
         : status === "insufficient_data"
-        ? "⚪ Dati insufficienti"
+        ? `⚪ Dati insufficienti (min. ${details.min_required || 15})`
         : "⚪ —";
     return (
       <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>
@@ -329,8 +329,16 @@ export function EAOverview() {
               : status === "degraded" ? "Degradazione"
               : "—";
 
+  const confidence = details.confidence; // "alta" | "media" | "bassa"
+  const confDot   = confidence === "alta"  ? "●●●"
+                   : confidence === "media" ? "●●○"
+                   : confidence === "bassa" ? "●○○" : "";
+  const confColor = confidence === "alta"  ? "var(--accent)"
+                   : confidence === "media" ? "var(--warning)"
+                   : "var(--text-muted)";
+
   const tooltip = details.recent_pf != null
-    ? `PF: ${details.historic_pf} → ${details.recent_pf} | WR: ${details.historic_wr}% → ${details.recent_wr}% | ${details.recent_trades} trade recenti`
+    ? `PF: ${details.historic_pf} → ${details.recent_pf} | WR: ${details.historic_wr}% → ${details.recent_wr}% | ${details.recent_trades} trade recenti | confidenza: ${confidence}`
     : "";
 
   return (
@@ -345,6 +353,14 @@ export function EAOverview() {
         {score}
       </span>
       <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{label}</span>
+      {confDot && (
+        <span
+          title={`Confidenza: ${confidence} (${details.recent_trades} trade recenti)`}
+          style={{ fontSize: 9, color: confColor, letterSpacing: 1 }}
+        >
+          {confDot}
+        </span>
+      )}
     </div>
   );
 }

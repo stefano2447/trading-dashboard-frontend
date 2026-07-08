@@ -167,6 +167,30 @@ function MetricRow({ label, value, color }) {
   );
 }
 
+function CompareRow({ label, live, backtest, higherIsBetter = true }) {
+  const l = live, b = backtest;
+  const hasBoth = l != null && b != null && !isNaN(l) && !isNaN(b);
+  const delta = hasBoth ? l - b : null;
+  const good  = hasBoth ? (higherIsBetter ? delta >= 0 : delta <= 0) : null;
+
+  return (
+    <div style={{
+      display: "grid", gridTemplateColumns: "1fr 90px 90px 70px", alignItems: "center",
+      padding: "0.5rem 0", borderBottom: "1px solid var(--border)", fontSize: 12,
+    }}>
+      <span style={{ color: "var(--text-muted)" }}>{label}</span>
+      <span style={{ fontFamily: "var(--font-data)", textAlign: "right" }}>{b != null ? fmt(b) : "—"}</span>
+      <span style={{ fontFamily: "var(--font-data)", textAlign: "right", fontWeight: 600 }}>{l != null ? fmt(l) : "—"}</span>
+      <span style={{
+        textAlign: "right", fontSize: 11,
+        color: hasBoth ? (good ? "var(--accent)" : "var(--danger)") : "var(--text-muted)",
+      }}>
+        {hasBoth ? `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}` : "—"}
+      </span>
+    </div>
+  );
+}
+
 function SectionTitle({ children }) {
   return (
     <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em", color: "var(--text-muted)", marginBottom: "0.75rem", marginTop: "1.5rem" }}>
@@ -228,6 +252,10 @@ export function EADetail() {
   const [loading, setLoading]       = useState(true);
   const [equityMode, setEquityMode] = useState("norm");
   const { getConfig, updateConfig } = useEAConfigs();
+  const [btCandidates, setBtCandidates] = useState([]);
+  const [btRef, setBtRef]               = useState("");
+  const [btData, setBtData]             = useState(null);
+  const [btNames, setBtNames]           = useState([]);
 
   const eaName = name ? decodeURIComponent(name) : null;
 
@@ -239,6 +267,34 @@ export function EADetail() {
       setLoading(false);
     });
   }, [eaName]);
+
+  // Backtest: nomi disponibili + suggerimenti automatici per l'EA corrente
+  useEffect(() => {
+    if (!eaName) return;
+    api.listBacktestNames().then(d => setBtNames(d.names || []));
+    api.suggestBacktestMatch(eaName).then(d => setBtCandidates(d.candidates || []));
+  }, [eaName]);
+
+  // Precompila con il riferimento salvato, o col miglior suggerimento se non impostato
+  useEffect(() => {
+    if (!eaName) return;
+    const saved = getConfig(eaName)?.backtest_ref;
+    if (saved) setBtRef(saved);
+    else if (btCandidates.length && btCandidates[0].score > 0.4) setBtRef(btCandidates[0].backtest_ref);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [eaName, btCandidates]);
+
+  // Carica le metriche di backtest quando cambia il riferimento
+  useEffect(() => {
+    if (!btRef) { setBtData(null); return; }
+    api.getBacktestReference(btRef).then(setBtData).catch(() => setBtData(null));
+  }, [btRef]);
+
+  function saveBacktestRef(ref) {
+    setBtRef(ref);
+    updateConfig(eaName, { backtest_ref: ref });
+    api.saveEAConfig(eaName, { backtest_ref: ref });
+  }
 
   const metrics = useMemo(() => {
     if (!trades.length) return null;
@@ -404,6 +460,65 @@ export function EADetail() {
                 </AreaChart>
               </ResponsiveContainer>
             </div>
+          </div>
+
+          {/* Live vs Backtest */}
+          <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-md)", padding: "1.25rem" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.75rem", flexWrap: "wrap", gap: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em", color: "var(--text-muted)" }}>LIVE vs BACKTEST</div>
+              <select
+                value={btRef}
+                onChange={e => saveBacktestRef(e.target.value)}
+                style={{
+                  background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 4,
+                  color: "var(--text-primary)", padding: "4px 8px", fontSize: 12, fontFamily: "var(--font-data)",
+                }}
+              >
+                <option value="">— Nessun riferimento —</option>
+                {btCandidates.length > 0 && (
+                  <optgroup label="Suggeriti">
+                    {btCandidates.map(c => (
+                      <option key={c.backtest_ref} value={c.backtest_ref}>
+                        {c.backtest_ref} ({Math.round(c.score * 100)}%)
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="Tutti">
+                  {btNames.map(n => <option key={n} value={n}>{n}</option>)}
+                </optgroup>
+              </select>
+            </div>
+
+            {!btRef ? (
+              <p style={{ color: "var(--text-muted)", fontSize: 12 }}>
+                Seleziona un riferimento di backtest per confrontare le performance.
+              </p>
+            ) : !btData ? (
+              <Spinner />
+            ) : (
+              <>
+                <div style={{
+                  display: "grid", gridTemplateColumns: "1fr 90px 90px 70px",
+                  padding: "0.4rem 0", borderBottom: "2px solid var(--border)",
+                  fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.05em",
+                }}>
+                  <span>METRICA</span>
+                  <span style={{ textAlign: "right" }}>BACKTEST</span>
+                  <span style={{ textAlign: "right" }}>LIVE</span>
+                  <span style={{ textAlign: "right" }}>DELTA</span>
+                </div>
+                <CompareRow label="Calmar Ratio" live={metrics.calmar}  backtest={btData.calmar} />
+                <CompareRow label="Win Rate %"   live={metrics.winRate} backtest={btData.win_rate} />
+                <CompareRow label="Avg RR"       live={metrics.avgRR}   backtest={btData.avg_rr} />
+                <p style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.75rem" }}>
+                  Backtest: {btData.period || "—"} · {btData.n_trades ?? "—"} trade &nbsp;|&nbsp;
+                  Live: {trades.length} trade dal {fmtDate(metrics.firstTrade)}.
+                  Max DD non incluso nel confronto diretto: nel backtest è in % sul capitale iniziale
+                  ({fmt(btData.max_dd_pct)}%), nel live è normalizzato a 0.01 lotti — scale diverse, non comparabili 1:1.
+                </p>
+              </>
+            )}
           </div>
 
           {/* Metriche + Heatmap */}
