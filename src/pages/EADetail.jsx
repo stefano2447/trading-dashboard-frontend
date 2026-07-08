@@ -276,11 +276,15 @@ export function EADetail() {
   }, [eaName]);
 
   // Precompila con il riferimento salvato, o col miglior suggerimento se non impostato
+  // (in questo caso il suggerimento viene anche PERSISTITO, non solo mostrato)
   useEffect(() => {
     if (!eaName) return;
     const saved = getConfig(eaName)?.backtest_ref;
-    if (saved) setBtRef(saved);
-    else if (btCandidates.length && btCandidates[0].score > 0.4) setBtRef(btCandidates[0].backtest_ref);
+    if (saved) {
+      setBtRef(saved);
+    } else if (btCandidates.length && btCandidates[0].score > 0.4) {
+      saveBacktestRef(btCandidates[0].backtest_ref);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [eaName, btCandidates]);
 
@@ -294,6 +298,7 @@ export function EADetail() {
     setBtRef(ref);
     updateConfig(eaName, { backtest_ref: ref });
     api.saveEAConfig(eaName, { backtest_ref: ref });
+    window.dispatchEvent(new CustomEvent("ea-config-updated", { detail: { eaName, backtest_ref: ref } }));
   }
 
   const metrics = useMemo(() => {

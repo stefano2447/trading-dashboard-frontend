@@ -149,6 +149,17 @@ export function EAOverview() {
     api.getEAs(showHidden).then(data => { setEas(data); setLoading(false); });
   }, [showHidden]);
 
+  // Ricarica la lista se torniamo da un'altra pagina (es. dopo aver collegato un backtest in dettaglio)
+  useEffect(() => {
+    const refetch = () => api.getEAs(showHidden).then(setEas);
+    window.addEventListener("ea-config-updated", refetch);
+    window.addEventListener("focus", refetch);
+    return () => {
+      window.removeEventListener("ea-config-updated", refetch);
+      window.removeEventListener("focus", refetch);
+    };
+  }, [showHidden]);
+
   const enriched = useMemo(() => eas.map(ea => {
     const months = monthsActive(ea.first_trade_date);
     return {
