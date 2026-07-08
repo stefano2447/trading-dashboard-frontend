@@ -276,11 +276,13 @@ export function EADetail() {
   }, [eaName]);
 
   // Precompila con il riferimento salvato, o col miglior suggerimento se non impostato
-  // (in questo caso il suggerimento viene anche PERSISTITO, non solo mostrato)
+  // (in questo caso il suggerimento viene anche PERSISTITO, non solo mostrato).
+  // Importante: se l'utente ha esplicitamente rimosso il riferimento (backtest_ref === ""),
+  // NON riproporre l'auto-match — undefined/null = mai impostato, "" = rimosso a mano.
   useEffect(() => {
     if (!eaName) return;
     const saved = getConfig(eaName)?.backtest_ref;
-    if (saved) {
+    if (saved !== undefined && saved !== null) {
       setBtRef(saved);
     } else if (btCandidates.length && btCandidates[0].score > 0.4) {
       saveBacktestRef(btCandidates[0].backtest_ref);
@@ -327,7 +329,7 @@ export function EADetail() {
     const avgLots = trades.reduce((s, t) => s + (t.lots || 0.01), 0) / trades.length;
     const months  = monthsActive(trades[0]?.open_time);
     // Floor a 3 mesi per evitare estrapolazioni esplosive su storici corti (coerente col backend)
-    const calmar  = months > 0 && maxDD > 0 ? (total * (12 / Math.max(months, 3))) / maxDD : null;
+    // Calmar rimosso: instabile su storici live corti, sostituito da Ret/DD (non annualizzato)
     const retDD   = maxDD > 0 ? total / maxDD : null;
     const maxCL   = calcMaxConsecLoss(trades);
 
@@ -335,7 +337,7 @@ export function EADetail() {
       total, totalRaw, pf, winRate,
       wins: wins.length, losses: losses.length,
       avgWin, avgLoss, avgRR, expectancy,
-      maxDD, calmar, retDD, maxCL,
+      maxDD, retDD, maxCL,
       months, avgLots,
       firstTrade: trades[0]?.open_time,
       lastTrade:  trades[trades.length - 1]?.close_time,
@@ -406,7 +408,7 @@ export function EADetail() {
             {[
               { label: "NET PROFIT (norm.)", value: fmtProfit(metrics.total),                         color: metrics.total    >= 0   ? "var(--accent)"  : "var(--danger)"  },
               { label: "PROFIT FACTOR",      value: fmt(metrics.pf),                                  color: (metrics.pf||0)  >= 1.5 ? "var(--accent)"  : "var(--warning)" },
-              { label: "CALMAR RATIO",       value: fmt(metrics.calmar),                              color: (metrics.calmar||0) >= 2 ? "var(--accent)"  : "var(--warning)" },
+              { label: "RET / MAX DD",       value: fmt(metrics.retDD),                               color: (metrics.retDD||0) >= 2 ? "var(--accent)"  : "var(--warning)" },
               { label: "RET/DD",             value: fmt(metrics.retDD),                               color: (metrics.retDD||0)  >= 2 ? "var(--accent)"  : "var(--warning)" },
               { label: "WIN RATE",           value: `${fmt(metrics.winRate, 1)}%`,                    color: metrics.winRate  >= 55  ? "var(--accent)"  : "var(--warning)" },
               { label: "MAX DD (norm.)",     value: metrics.maxDD > 0 ? `-${fmt(metrics.maxDD)}` : "—", color: "var(--danger)" },
@@ -515,16 +517,15 @@ export function EADetail() {
                   <span style={{ textAlign: "right" }}>DELTA</span>
                 </div>
                 <CompareRow label="Ret / MaxDD" live={metrics.retDD}  backtest={btData.ret_dd} />
-                <CompareRow label="Calmar (annualizzato)" live={metrics.calmar} backtest={btData.calmar} />
                 <CompareRow label="Win Rate %"   live={metrics.winRate} backtest={btData.win_rate} />
                 <CompareRow label="Avg RR"       live={metrics.avgRR}   backtest={btData.avg_rr} />
                 <p style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.75rem" }}>
                   Backtest: {btData.period || "—"} · {btData.n_trades ?? "—"} trade &nbsp;|&nbsp;
                   Live: {trades.length} trade dal {fmtDate(metrics.firstTrade)}.
                   "Ret/MaxDD" è il rapporto tra rendimento totale e drawdown massimo, <b>non annualizzato</b>:
-                  stessa grandezza per live e backtest (a differenza del Calmar, che sui pochi mesi di storico live
-                  può risultare gonfiato dall'estrapolazione annuale) — usalo come confronto principale di coerenza sul DD.
-                  Il valore backtest è una stima derivata da Calmar × durata del backtest.
+                  stessa grandezza per live e backtest, quindi confrontabile direttamente indipendentemente
+                  dal numero di trade o mesi di storico disponibili.
+                  Il valore backtest è una stima derivata dal Calmar di backtest × durata del backtest.
                   Max DD grezzo: backtest {fmt(btData.max_dd_pct)}% sul capitale iniziale, live {fmt(metrics.maxDD)} (normalizzato a 0.01 lotti) — non confrontabili direttamente in valore assoluto, per questo si usa il rapporto Ret/MaxDD sopra.
                 </p>
               </>
@@ -546,7 +547,7 @@ export function EADetail() {
                 <MetricRow label="Net Profit (norm.)" value={fmtProfit(metrics.total)}          color={metrics.total >= 0 ? "var(--accent)" : "var(--danger)"} />
                 <MetricRow label="Max DD (norm.)"     value={metrics.maxDD > 0 ? `-${fmt(metrics.maxDD)}` : "—"} color="var(--danger)" />
                 <MetricRow label="Ret/DD"             value={fmt(metrics.retDD)}               color={(metrics.retDD||0) >= 2 ? "var(--accent)" : "var(--warning)"} />
-                <MetricRow label="Calmar Ratio"       value={fmt(metrics.calmar)}              color={(metrics.calmar||0) >= 2 ? "var(--accent)" : "var(--warning)"} />
+                <MetricRow label="Ret / MaxDD"        value={fmt(metrics.retDD)}               color={(metrics.retDD||0) >= 2 ? "var(--accent)" : "var(--warning)"} />
                 <MetricRow label="Avg Win"            value={`+${fmt(metrics.avgWin)}`}        color="var(--accent)" />
                 <MetricRow label="Avg Loss"           value={`-${fmt(metrics.avgLoss)}`}       color="var(--danger)" />
                 <MetricRow label="Avg RR"             value={fmt(metrics.avgRR)} />

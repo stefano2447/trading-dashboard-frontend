@@ -15,11 +15,6 @@ function monthsActive(firstDate) {
   return (now.getFullYear() - start.getFullYear()) * 12 + (now.getMonth() - start.getMonth());
 }
 
-function calcCalmar(profit, maxDd, months) {
-  if (!maxDd || maxDd === 0 || !months || months === 0) return null;
-  return (profit * (12 / months)) / Math.abs(maxDd);
-}
-
 function calcRetDd(profit, maxDd) {
   if (!maxDd || maxDd === 0) return null;
   return profit / Math.abs(maxDd);
@@ -82,7 +77,7 @@ const COLUMN_GROUPS = [
     { key: "win_rate_pct",          label: "Win%",          numeric: true  },
     { key: "profit_factor",         label: "PF",            numeric: true  },
     { key: "_ret_dd",               label: "Ret/DD",        numeric: true  },
-    { key: "_calmar",               label: "Calmar",        numeric: true  },
+    { key: "_retdd",                label: "Ret/DD",        numeric: true  },
   ]},
   { label: "PROFITTO (norm.)", columns: [
     { key: "total_net_profit_norm", label: "Net $",         numeric: true  },
@@ -137,7 +132,7 @@ function SummaryCard({ label, value, sub, valueColor }) {
 export function EAOverview() {
   const [eas, setEas]                 = useState([]);
   const [loading, setLoading]         = useState(true);
-  const [sortKey, setSortKey]         = useState("_calmar");
+  const [sortKey, setSortKey]         = useState("_retdd");
   const [sortDir, setSortDir]         = useState("desc");
   const [showHidden, setShowHidden]   = useState(false);
   const [assetFilter, setAssetFilter] = useState("TUTTI");
@@ -166,7 +161,7 @@ export function EAOverview() {
       ...ea,
       _months: months,
       _ret_dd: calcRetDd(ea.total_net_profit_norm ?? ea.total_net_profit, ea.max_dd),
-      _calmar: calcCalmar(ea.total_net_profit_norm ?? ea.total_net_profit, ea.max_dd, months),
+      _retdd: calcRetDd(ea.total_net_profit_norm ?? ea.total_net_profit, ea.max_dd),
       _asset:  normalizeAsset(ea.symbol),
     };
   }), [eas]);
@@ -197,9 +192,9 @@ export function EAOverview() {
   const activeEAs = filtered.filter(ea => !ea.is_hidden);
   const inProfit  = activeEAs.filter(ea => (ea.total_net_profit_norm ?? ea.total_net_profit) > 0).length;
   const avgPF     = activeEAs.length ? activeEAs.reduce((s, ea) => s + (ea.profit_factor || 0), 0) / activeEAs.length : 0;
-  const avgCalmar = activeEAs.filter(ea => ea._calmar !== null).reduce((s, ea) => s + ea._calmar, 0) / (activeEAs.filter(ea => ea._calmar !== null).length || 1);
+  const avgRetDd = activeEAs.filter(ea => ea._retdd !== null).reduce((s, ea) => s + ea._retdd, 0) / (activeEAs.filter(ea => ea._retdd !== null).length || 1);
   const totalNorm = activeEAs.reduce((s, ea) => s + (ea.total_net_profit_norm ?? ea.total_net_profit ?? 0), 0);
-  const bestEA    = [...activeEAs].sort((a, b) => (b._calmar ?? -999) - (a._calmar ?? -999))[0];
+  const bestEA    = [...activeEAs].sort((a, b) => (b._retdd ?? -999) - (a._retdd ?? -999))[0];
 
   // ─── Render cella ─────────────────────────────────────────────────────────
   function renderCell(ea, col) {
@@ -236,8 +231,8 @@ export function EAOverview() {
         return <Badge value={ea.profit_factor ? Number(ea.profit_factor).toFixed(2) : "—"} type={pfType(ea.profit_factor)} />;
       case "_ret_dd":
         return <Badge value={ea._ret_dd ? ea._ret_dd.toFixed(2) : "—"} type={rdType(ea._ret_dd)} />;
-      case "_calmar":
-        return <Badge value={ea._calmar ? ea._calmar.toFixed(2) : "—"} type={rdType(ea._calmar)} />;
+      case "_retdd":
+        return <Badge value={ea._retdd ? ea._retdd.toFixed(2) : "—"} type={rdType(ea._retdd)} />;
       case "total_net_profit_norm": {
         const p = ea.total_net_profit_norm ?? ea.total_net_profit;
         return <span style={{ fontFamily: "var(--font-data)", fontWeight: 600, color: p >= 0 ? "var(--accent)" : "var(--danger)" }}>{fmtProfit(p)}</span>;
@@ -539,8 +534,8 @@ export function EAOverview() {
         <SummaryCard label="STRATEGIE ATTIVE"        value={activeEAs.length}      sub={`${inProfit} in profitto · ${activeEAs.length - inProfit} in perdita`} />
         <SummaryCard label="NET PROFIT TOTALE (norm.)" value={fmtProfit(totalNorm)} sub="somma normalizzata 0.01 lotti" valueColor={totalNorm >= 0 ? "var(--accent)" : "var(--danger)"} />
         <SummaryCard label="PF MEDIO"                value={avgPF.toFixed(2)}      sub="su strategie attive"           valueColor={avgPF >= 1.5 ? "var(--accent)" : avgPF >= 1 ? "var(--warning)" : "var(--danger)"} />
-        <SummaryCard label="CALMAR MEDIO"            value={avgCalmar.toFixed(2)}   sub="annualizzato / max DD"         valueColor={avgCalmar >= 2 ? "var(--accent)" : avgCalmar >= 1 ? "var(--warning)" : "var(--danger)"} />
-        <SummaryCard label="MIGLIORE EA"             value={bestEA?.ea_name ?? "—"} sub={bestEA ? `Calmar: ${bestEA._calmar?.toFixed(2)}` : ""} valueColor="var(--accent)" />
+        <SummaryCard label="RET/DD MEDIO"            value={avgRetDd.toFixed(2)}   sub="rendimento tot. / max DD"      valueColor={avgRetDd >= 2 ? "var(--accent)" : avgRetDd >= 1 ? "var(--warning)" : "var(--danger)"} />
+        <SummaryCard label="MIGLIORE EA"             value={bestEA?.ea_name ?? "—"} sub={bestEA ? `Ret/DD: ${bestEA._retdd?.toFixed(2)}` : ""} valueColor="var(--accent)" />
       </div>
 
       {/* Filtro asset */}
