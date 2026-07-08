@@ -102,13 +102,16 @@ const COLUMN_GROUPS = [
   { label: "HEALTH", columns: [
   { key: "_health", label: "Health Score", numeric: false },
 ]},
+  { label: "BACKTEST", columns: [
+  { key: "_backtest", label: "vs Backtest", numeric: false },
+]},
   { label: "AZIONI", columns: [
   { key: "_actions", label: "", numeric: false },
 ]},
 ];
 
 const ALL_COLUMNS = COLUMN_GROUPS.flatMap(g => g.columns);
-const GESTIONE_KEYS = ["_next_opt", "_notes", "_actions", "_health"];
+const GESTIONE_KEYS = ["_next_opt", "_notes", "_actions", "_health", "_backtest"];
 
 function SortIcon({ column, sortKey, sortDir }) {
   if (sortKey !== column) return <ArrowUpDown size={11} style={{ opacity: 0.25 }} />;
@@ -361,6 +364,58 @@ export function EAOverview() {
           {confDot}
         </span>
       )}
+    </div>
+  );
+}
+
+      case "_backtest": {
+  const ref  = ea.backtest_ref;
+  const coh  = ea.backtest_coherence;
+
+  if (!ref) {
+    return (
+      <button
+        onClick={() => navigate(`/analisi/${encodeURIComponent(ea.ea_name)}`)}
+        style={{
+          fontSize: 11, color: "var(--text-muted)", background: "none",
+          border: "1px dashed var(--border)", borderRadius: 4, padding: "3px 8px", cursor: "pointer",
+        }}
+        title="Apri la scheda di dettaglio per collegare un backtest di riferimento"
+      >
+        + Collega backtest
+      </button>
+    );
+  }
+
+  const status = coh?.status;
+  const emoji = status === "migliore"    ? "🟢"
+              : status === "coerente"    ? "🟢"
+              : status === "peggiore"    ? "🔴"
+              : status === "insufficiente" ? "⚪"
+              : "⚪";
+  const label = status === "migliore"      ? "Migliore"
+              : status === "coerente"      ? "Coerente"
+              : status === "peggiore"      ? "Peggiore"
+              : status === "insufficiente" ? "Pochi trade"
+              : "n/d";
+  const color = status === "migliore"    ? "var(--accent)"
+              : status === "coerente"    ? "var(--accent)"
+              : status === "peggiore"    ? "var(--danger)"
+              : "var(--text-muted)";
+
+  return (
+    <div
+      onClick={() => navigate(`/analisi/${encodeURIComponent(ea.ea_name)}`)}
+      title={coh?.ratio != null ? `Rapporto medio live/backtest: ${coh.ratio} su ${coh.n_metrics} metriche · clic per cambiare riferimento` : "Clic per cambiare riferimento"}
+      style={{ display: "flex", flexDirection: "column", gap: 2, cursor: "pointer" }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <span style={{ fontSize: 12 }}>{emoji}</span>
+        <span style={{ fontSize: 11, color, fontWeight: 600 }}>{label}</span>
+      </div>
+      <span style={{ fontSize: 10, color: "var(--text-muted)", fontFamily: "var(--font-data)", maxWidth: 140, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {ref}
+      </span>
     </div>
   );
 }
