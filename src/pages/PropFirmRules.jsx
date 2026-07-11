@@ -157,12 +157,16 @@ function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTrade
   // Un solo scale_factor per l'intero portafoglio, ancorato al giorno PEGGIORE
   // storico (non alla media): preserva i pesi relativi tra EA così come
   // determinati dal backtest, invece di normalizzare ogni EA allo stesso
-  // rischio per trade (che schiacciava tutte le strategie sullo stesso valore).
+  // rischio per trade.
   //
-  // maxRiskPerTradePct resta un CAP di sicurezza sul portafoglio nel suo
-  // complesso: se il trade peggiore stimato del portafoglio (col fattore base)
-  // supera il cap, si riduce IL FATTORE UNICO per tutti — non solo per l'EA
-  // che lo sfora — per non alterare i rapporti tra strategie.
+  // maxRiskPerTradePct NON altera più lo scale_factor (in una versione
+  // precedente lo riduceva quando il trade peggiore stimato lo superava,
+  // ma la riduzione era proporzionale al fattore stesso: il risultato
+  // collassava a una costante indipendente dal riskPct scelto, "appiattendo"
+  // tutti i livelli di rischio oltre una certa soglia sullo stesso numero).
+  // Ora resta solo un WARNING diagnostico: segnala quali EA, a quel riskPct,
+  // rischierebbero più del cap sul singolo trade, senza modificare la
+  // simulazione — il rischio simulato è sempre esattamente quello scelto.
   //
   // Restituisce { scaledArr, anyCapped, perEaInfo }
   const overrides = assetPriceOverrides || {};
@@ -179,7 +183,7 @@ function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTrade
 
   const maxDailyLoss     = Math.abs(Math.min(...losses));
   const riskTargetDollar = capital * riskPct / 100.0;
-  let   scaleFactorBase  = maxDailyLoss > 0 ? riskTargetDollar / maxDailyLoss : 1.0;
+  const scaleFactorBase   = maxDailyLoss > 0 ? riskTargetDollar / maxDailyLoss : 1.0;
 
   // Fattore di correzione prezzo per-EA (solo per EA price_scaling_*), NON
   // fa parte dello scaleFactorBase condiviso: riflette solo il cambio di
@@ -193,10 +197,10 @@ function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTrade
     return 1.0;
   };
 
-  // Stima il trade peggiore del portafoglio col fattore base, per il cap di sicurezza
+  // Diagnostica: quali EA, a questo scaleFactorBase, sforerebbero il cap sul
+  // singolo trade — informativo soltanto, non modifica scaleFactorBase.
   const maxRiskDollar = capital * (maxRiskPerTradePct || 2.0) / 100.0;
-  let worstTradeEstimate = 0;
-  for (const comp of eaComponents) {
+  const perEaInfo = eaComponents.map(comp => {
     const sizing = comp.lot_sizing_type || "fixed_lots";
     const pc = priceCorrection(comp);
     let riskPerTrade;
@@ -207,20 +211,14 @@ function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTrade
       const maxSinglePct = comp.max_single_trade_loss_pct || 0;
       riskPerTrade = (maxSinglePct / 100.0) * comp.initial_capital * scaleFactorBase * pc;
     }
-    worstTradeEstimate = Math.max(worstTradeEstimate, riskPerTrade);
-  }
-
-  let anyCapped = false;
-  if (worstTradeEstimate > maxRiskDollar && worstTradeEstimate > 0) {
-    scaleFactorBase = scaleFactorBase * (maxRiskDollar / worstTradeEstimate);
-    anyCapped = true;
-  }
-
-  const perEaInfo = eaComponents.map(comp => ({
-    ea_name: comp.ea_name,
-    scale_factor: scaleFactorBase * priceCorrection(comp),
-    capped: anyCapped,
-  }));
+    return {
+      ea_name: comp.ea_name,
+      scale_factor: scaleFactorBase * pc,
+      capped: riskPerTrade > maxRiskDollar,
+      estimated_single_trade_risk: riskPerTrade,
+    };
+  });
+  const anyCapped = perEaInfo.some(e => e.capped);
 
   const scaledArr = new Array(minLen).fill(0);
   eaComponents.forEach((comp, idx) => {
@@ -233,6 +231,7 @@ function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTrade
 
   return { scaledArr, anyCapped, perEaInfo, scaleFactorBase };
 }
+
 
 // ─── Monte Carlo per un livello di rischio ────────────────────────────────────
 function runForRiskLevel(eaComponents, params, riskPct) {
@@ -465,6 +464,8 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       ? Math.abs(Math.min(...eaLosses)) * lotRatio
       : null;
 
+    const tradeCapped = worstCaseSingleRisk > maxRiskDollar;
+
     return {
       ea_name:                          comp.ea_name,
       sizing_type:                      sizing,
@@ -476,6 +477,7 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       worst_case_single_trade_dollar:   worstCaseSingleRisk,       // peggior caso storico
       expected_avg_daily_loss_dollar:   avgEALoss ? Math.round(avgEALoss) : null,
       expected_max_daily_loss_dollar:   maxEALoss ? Math.round(maxEALoss) : null,
+      trade_capped:                     tradeCapped,   // ⚠ diagnostico: NON riduce più il rischio, solo segnala
       warning,
       min_lot_step:                     minLotStepOut,
       dollar_risk_at_min_lot:           dollarRiskAtMinLot,
@@ -785,6 +787,7 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
       note,
       factor:      Math.round(factor * 10000) / 10000,
       warning,
+      min_lot_step:            minLot,
       dollar_risk_at_min_lot:  dollarRiskAtMinLot,
       min_capital_recommended: minCapitalRecommended,
     };
@@ -2074,7 +2077,7 @@ function ChallengeSimulator({ firms }) {
                                            color: isOpt ? "var(--accent)" : "var(--text-primary)" }}>
                                 {r.risk_pct}%
                                 {r.trade_capped && (
-                                  <span title={`Rischio effettivo: ${r.effective_risk_pct}% (ridotto dal cap ${maxRiskPerTrade}% per trade)`}
+                                  <span title={`A questo rischio, il trade peggiore stimato di almeno un EA supera il tuo limite di rischio/trade (${maxRiskPerTrade}%). Solo un avviso, il rischio simulato è comunque ${r.risk_pct}%.`}
                                     style={{ marginLeft: 4, color: "var(--warning)", fontSize: 10, cursor: "help" }}>
                                     ⚠cap
                                   </span>
@@ -2184,7 +2187,7 @@ function ChallengeSimulator({ firms }) {
                                 ? `$${Number(rec.param_value).toFixed(0)}`
                                 : Number(rec.param_value).toFixed(4)}
                               {rec.trade_capped && (
-                                <span title={`Lotti ridotti: il trade peggiore supererebbe il ${maxRiskPerTrade}% per trade. Valore capped al limite.`}
+                                <span title={`Attenzione: il trade peggiore stimato per questo EA supera il ${maxRiskPerTrade}% di rischio/trade impostato. Il valore NON è stato ridotto — rifletti se questo livello di rischio è accettabile.`}
                                   style={{ marginLeft: 4, fontSize: 10, color: "var(--warning)", cursor: "help" }}>
                                   ⚠
                                 </span>
@@ -2225,8 +2228,9 @@ function ChallengeSimulator({ firms }) {
                       </tbody>
                     </table>
                     <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.5rem" }}>
-                      Il cap rischio/trade viene applicato per-EA: solo gli EA che lo richiedono
-                      vengono ridotti, gli altri mantengono i lotti pieni. ⚠ = EA cappato.
+                      ⚠ = a questo rischio, il trade peggiore stimato dell'EA supera il tuo limite di
+                      rischio/trade ({maxRiskPerTrade}%). È solo un avviso: il rischio simulato resta
+                      sempre esattamente quello scelto nello slider, non viene ridotto automaticamente.
                     </div>
                   </Card>
                 )}
@@ -2772,19 +2776,38 @@ function RealAccountSimulator() {
                         </tr>
                       </thead>
                       <tbody>
-                        {results.lot_recommendations.map(rec => (
-                          <tr key={rec.ea_name} style={{ borderBottom:"1px solid var(--border)" }}>
-                            <td style={{ padding:"0.35rem 0.5rem",color:"var(--text-primary)",fontWeight:500 }}>{rec.ea_name}</td>
-                            <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",color:"var(--text-muted)",fontSize:11 }}>{rec.param_name}</td>
-                            <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
-                                         fontWeight:700,color:"var(--accent)" }}>
-                              {rec.sizing_type==="sqx_fixed_money" ? `$${Number(rec.param_value).toFixed(0)}` : Number(rec.param_value).toFixed(4)}
-                            </td>
-                            <td style={{ padding:"0.35rem 0.5rem",textAlign:"right" }}>
-                              {rec.note && <span title={rec.note} style={{ fontSize:10,color:"var(--text-muted)",cursor:"help" }}>ⓘ</span>}
-                            </td>
-                          </tr>
-                        ))}
+                        {results.lot_recommendations.flatMap(rec => {
+                          const rows = [
+                            <tr key={rec.ea_name} style={{ borderBottom: rec.warning ? "none" : "1px solid var(--border)" }}>
+                              <td style={{ padding:"0.35rem 0.5rem",color:"var(--text-primary)",fontWeight:500 }}>{rec.ea_name}</td>
+                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",color:"var(--text-muted)",fontSize:11 }}>{rec.param_name}</td>
+                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
+                                           fontWeight:700,color: rec.warning ? "var(--warning)" : "var(--accent)" }}>
+                                {rec.sizing_type==="sqx_fixed_money" ? `$${Number(rec.param_value).toFixed(0)}` : Number(rec.param_value).toFixed(4)}
+                                {rec.warning && (
+                                  <span style={{ marginLeft: 4, fontSize: 10, color: "var(--warning)" }}>⚠</span>
+                                )}
+                              </td>
+                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right" }}>
+                                {rec.note && <span title={rec.note} style={{ fontSize:10,color:"var(--text-muted)",cursor:"help" }}>ⓘ</span>}
+                              </td>
+                            </tr>
+                          ];
+                          if (rec.warning) {
+                            rows.push(
+                              <tr key={rec.ea_name + "_warn"} style={{ borderBottom: "1px solid var(--border)" }}>
+                                <td colSpan={4} style={{ padding: "0 0.5rem 0.5rem", fontSize: 11, color: "var(--warning)" }}>
+                                  ⚠ Lotto sotto il minimo broker ({rec.min_lot_step}): al lotto minimo rischi
+                                  ≈ ${rec.dollar_risk_at_min_lot} per trade invece di quanto impostato.
+                                  {rec.min_capital_recommended && (
+                                    <> Capitale minimo consigliato per questo rischio: ~${rec.min_capital_recommended.toLocaleString()}.</>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          }
+                          return rows;
+                        })}
                       </tbody>
                     </table>
                     <div style={{ fontSize:10,color:"var(--text-muted)",marginTop:"0.5rem" }}>
