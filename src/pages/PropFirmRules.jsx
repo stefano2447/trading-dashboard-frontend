@@ -39,9 +39,81 @@ function randomChoice(arr, rand) {
   return arr[Math.floor(rand() * arr.length)];
 }
 
+// ─── Pesi di ricampionamento sui regimi (worse-regime oversampling) ───────────
+// Stessa logica del backend _compute_regime_weights: i giorni che appartengono
+// a finestre rolling con rapporto rendimento/drawdown peggiore vengono pescati
+// più spesso nel bootstrap, per non essere ottimisti quanto un bootstrap iid puro.
+function computeRegimeWeights(arr, window, worstWeight, bestWeight) {
+  window = window || 60;
+  worstWeight = worstWeight ?? 2.5;
+  bestWeight  = bestWeight  ?? 0.5;
+  const n = arr.length;
+  if (n < window * 2) return null; // troppo pochi dati: fallback a bootstrap uniforme
+
+  const half = Math.floor(window / 2);
+  const ratios = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const lo = Math.max(0, i - half), hi = Math.min(n, i + half);
+    let cum = 0, peak = -Infinity, maxDD = 0, totalRet = 0;
+    for (let j = lo; j < hi; j++) {
+      cum += arr[j];
+      if (cum > peak) peak = cum;
+      const dd = peak - cum;
+      if (dd > maxDD) maxDD = dd;
+      totalRet = cum;
+    }
+    ratios[i] = maxDD > 1e-9 ? totalRet / maxDD : (totalRet <= 0 ? totalRet : totalRet * 10.0);
+  }
+
+  const idx = Array.from({ length: n }, (_, i) => i).sort((a, b) => ratios[a] - ratios[b]);
+  const pct = new Array(n);
+  idx.forEach((originalIdx, rank) => { pct[originalIdx] = n > 1 ? rank / (n - 1) : 0; });
+
+  const weights = new Array(n);
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    let w = worstWeight - pct[i] * (worstWeight - bestWeight);
+    if (w < 0.05) w = 0.05;
+    weights[i] = w;
+    sum += w;
+  }
+  for (let i = 0; i < n; i++) weights[i] /= sum;
+  return weights;
+}
+
+// Distribuzione cumulativa per campionamento pesato via ricerca binaria (O(log n) per estrazione)
+function buildCumulative(weights) {
+  const n = weights.length;
+  const cum = new Array(n);
+  let s = 0;
+  for (let i = 0; i < n; i++) { s += weights[i]; cum[i] = s; }
+  cum[n - 1] = 1.0; // evita problemi di arrotondamento float
+  return cum;
+}
+
+function weightedChoice(arr, cumWeights, rand) {
+  const r = rand();
+  let lo = 0, hi = arr.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cumWeights[mid] < r) lo = mid + 1; else hi = mid;
+  }
+  return arr[lo];
+}
+
+function weightedIndex(n, cumWeights, rand) {
+  const r = rand();
+  let lo = 0, hi = n - 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cumWeights[mid] < r) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
+
 // ─── Simulazione singola fase ─────────────────────────────────────────────────
 function simulatePhase(scaledArr, rand, capital, dailyDDLimit, totalDDLimit,
-                       profitTarget, timeLimit, minTradingDays, maxDDList) {
+                       profitTarget, timeLimit, minTradingDays, maxDDList, cumWeights) {
   let balance      = capital;
   let peakBalance  = capital;
   let day          = 0;
@@ -51,7 +123,7 @@ function simulatePhase(scaledArr, rand, capital, dailyDDLimit, totalDDLimit,
     day++;
     if (day > timeLimit) return { outcome: "timeout", days: day };
 
-    const dayPnl = randomChoice(scaledArr, rand);
+    const dayPnl = cumWeights ? weightedChoice(scaledArr, cumWeights, rand) : randomChoice(scaledArr, rand);
 
     if (dayPnl !== 0.0) {
       tradingDays++;
@@ -80,14 +152,21 @@ function simulatePhase(scaledArr, rand, capital, dailyDDLimit, totalDDLimit,
   }
 }
 
-// ─── Costruzione serie combinata con cap per-EA ───────────────────────────────
-function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTradePct) {
-  // Calcola lo scale_factor base dal rischio medio giornaliero del PORTAFOGLIO
-  // poi applica il cap per-EA individualmente, e ricombina i P&L.
+// ─── Costruzione serie combinata con UN SOLO scale_factor di portafoglio ──────
+function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTradePct, assetPriceOverrides) {
+  // Un solo scale_factor per l'intero portafoglio, ancorato al giorno PEGGIORE
+  // storico (non alla media): preserva i pesi relativi tra EA così come
+  // determinati dal backtest, invece di normalizzare ogni EA allo stesso
+  // rischio per trade (che schiacciava tutte le strategie sullo stesso valore).
+  //
+  // maxRiskPerTradePct resta un CAP di sicurezza sul portafoglio nel suo
+  // complesso: se il trade peggiore stimato del portafoglio (col fattore base)
+  // supera il cap, si riduce IL FATTORE UNICO per tutti — non solo per l'EA
+  // che lo sfora — per non alterare i rapporti tra strategie.
   //
   // Restituisce { scaledArr, anyCapped, perEaInfo }
+  const overrides = assetPriceOverrides || {};
 
-  // 1. Serie combinata grezza (a lotti backtest) per calcolare avg daily loss
   const minLen = Math.min(...eaComponents.map(c => c.daily_pnl_dollar.length));
   const rawCombined = new Array(minLen).fill(0);
   for (const c of eaComponents) {
@@ -98,49 +177,60 @@ function buildCappedScaledSeries(eaComponents, capital, riskPct, maxRiskPerTrade
   const losses = rawCombined.filter(x => x < 0);
   if (!losses.length) return { scaledArr: rawCombined, anyCapped: false, perEaInfo: [] };
 
-  const avgDailyLoss     = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
+  const maxDailyLoss     = Math.abs(Math.min(...losses));
   const riskTargetDollar = capital * riskPct / 100.0;
-  const scaleFactorBase  = avgDailyLoss > 0 ? riskTargetDollar / avgDailyLoss : 1.0;
+  let   scaleFactorBase  = maxDailyLoss > 0 ? riskTargetDollar / maxDailyLoss : 1.0;
 
-  const maxRiskDollar = capital * (maxRiskPerTradePct || 2.0) / 100.0;
-
-  // 2. Calcola scale_factor per-EA con cap individuale
-  const perEaInfo = [];
-  const eaScaleFactors = eaComponents.map(comp => {
+  // Fattore di correzione prezzo per-EA (solo per EA price_scaling_*), NON
+  // fa parte dello scaleFactorBase condiviso: riflette solo il cambio di
+  // prezzo dell'asset dal backtest a oggi, non una scelta di rischio.
+  const priceCorrection = comp => {
     const sizing = comp.lot_sizing_type || "fixed_lots";
+    const cur = overrides[comp.symbol];
+    if (!cur) return 1.0;
+    if (sizing === "price_scaling_explicit" && comp.defaultprice) return comp.defaultprice / cur;
+    if (sizing === "price_scaling_implicit" && comp.ref_price)    return comp.ref_price / cur;
+    return 1.0;
+  };
 
-    // Rischio per singolo trade in $ con scale_factor base
-    let riskPerTradeScaled;
+  // Stima il trade peggiore del portafoglio col fattore base, per il cap di sicurezza
+  const maxRiskDollar = capital * (maxRiskPerTradePct || 2.0) / 100.0;
+  let worstTradeEstimate = 0;
+  for (const comp of eaComponents) {
+    const sizing = comp.lot_sizing_type || "fixed_lots";
+    const pc = priceCorrection(comp);
+    let riskPerTrade;
     if (sizing === "sqx_fixed_money") {
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
-      riskPerTradeScaled = mmBase * scaleFactorBase;
+      riskPerTrade = mmBase * scaleFactorBase;
     } else {
       const maxSinglePct = comp.max_single_trade_loss_pct || 0;
-      const maxSingleDollarBacktest = (maxSinglePct / 100.0) * comp.initial_capital;
-      riskPerTradeScaled = maxSingleDollarBacktest * scaleFactorBase;
+      riskPerTrade = (maxSinglePct / 100.0) * comp.initial_capital * scaleFactorBase * pc;
     }
+    worstTradeEstimate = Math.max(worstTradeEstimate, riskPerTrade);
+  }
 
-    let sfEA = scaleFactorBase;
-    let capped = false;
-    if (riskPerTradeScaled > maxRiskDollar && riskPerTradeScaled > 0) {
-      sfEA = scaleFactorBase * (maxRiskDollar / riskPerTradeScaled);
-      capped = true;
-    }
-    perEaInfo.push({ ea_name: comp.ea_name, scale_factor: sfEA, capped });
-    return sfEA;
-  });
+  let anyCapped = false;
+  if (worstTradeEstimate > maxRiskDollar && worstTradeEstimate > 0) {
+    scaleFactorBase = scaleFactorBase * (maxRiskDollar / worstTradeEstimate);
+    anyCapped = true;
+  }
 
-  // 3. Ricombina i P&L con lo scale_factor per-EA (cappato dove serve)
+  const perEaInfo = eaComponents.map(comp => ({
+    ea_name: comp.ea_name,
+    scale_factor: scaleFactorBase * priceCorrection(comp),
+    capped: anyCapped,
+  }));
+
   const scaledArr = new Array(minLen).fill(0);
   eaComponents.forEach((comp, idx) => {
     const arr = comp.daily_pnl_dollar;
-    const sf  = eaScaleFactors[idx];
+    const sf  = perEaInfo[idx].scale_factor;
     for (let i = 0; i < minLen; i++) {
       scaledArr[i] += arr[arr.length - minLen + i] * sf;
     }
   });
 
-  const anyCapped = perEaInfo.some(e => e.capped);
   return { scaledArr, anyCapped, perEaInfo, scaleFactorBase };
 }
 
@@ -155,7 +245,7 @@ function runForRiskLevel(eaComponents, params, riskPct) {
   // Ogni EA viene scalato col suo scale_factor (cappato dove serve)
   // PRIMA di combinare i P&L → la simulazione riflette i lotti reali.
   const built = buildCappedScaledSeries(
-    eaComponents, params.capital, riskPct, params.max_risk_per_trade_pct
+    eaComponents, params.capital, riskPct, params.max_risk_per_trade_pct, params.asset_price_overrides
   );
   const scaledArr = built.scaledArr;
   if (!scaledArr.length) return null;
@@ -173,6 +263,11 @@ function runForRiskLevel(eaComponents, params, riskPct) {
   const timeLimit    = params.time_limit_days > 0 ? params.time_limit_days : 99999;
   const minDays      = params.min_trading_days || 0;
 
+  const regimeWeights = (params.regime_weighted_bootstrap !== false)
+    ? computeRegimeWeights(scaledArr, params.regime_window_days)
+    : null;
+  const cumWeights = regimeWeights ? buildCumulative(regimeWeights) : null;
+
   const n = params.n_simulations;
   const outcomes = { success: 0, daily_breach: 0, total_breach: 0, timeout: 0 };
   const daysToSuccess = [];
@@ -181,7 +276,7 @@ function runForRiskLevel(eaComponents, params, riskPct) {
   for (let i = 0; i < n; i++) {
     const r1 = simulatePhase(scaledArr, rand, params.capital,
                               dailyDDLimit, totalDDLimit,
-                              target1, timeLimit, minDays, maxDDReached);
+                              target1, timeLimit, minDays, maxDDReached, cumWeights);
 
     if (r1.outcome !== "success") {
       outcomes[r1.outcome]++;
@@ -194,7 +289,7 @@ function runForRiskLevel(eaComponents, params, riskPct) {
     } else {
       const r2 = simulatePhase(scaledArr, rand, params.capital,
                                 dailyDDLimit, totalDDLimit,
-                                target2, timeLimit, minDays, maxDDReached);
+                                target2, timeLimit, minDays, maxDDReached, cumWeights);
       if (r2.outcome === "success") {
         outcomes.success++;
         daysToSuccess.push(r1.days + r2.days);
@@ -252,74 +347,70 @@ function runForRiskLevel(eaComponents, params, riskPct) {
 // max, usando max_risk_per_trade_pct come tetto assoluto.
 // L'avgDailyLoss è mantenuto SOLO per scalare le colonne diagnostiche
 // (loss media/max giornaliera attesa) che mostrano i $ persi al giorno.
-function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optimalRisk, maxRiskPerTradePct) {
+function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optimalRisk, maxRiskPerTradePct, assetPriceOverrides, minLotStep) {
   if (!optimalRisk || !eaComponents.length) return [];
 
   const losses = dailyPnlDollar.filter(x => x < 0);
   if (!losses.length) return [];
 
-  // avgDailyLoss usato SOLO per scalare le colonne diagnostiche giornaliere.
-  // NON viene più usato per calcolare i lotti (era il bug principale).
-  const avgDailyLossCombined = Math.abs(losses.reduce((a,b)=>a+b,0)/losses.length);
+  const overrides = assetPriceOverrides || {};
+  const minLot     = minLotStep || 0.01;
 
-  const maxRiskDollar = capital * (maxRiskPerTradePct || 2.0) / 100.0;
+  // Ancoraggio al giorno PEGGIORE storico del portafoglio (non alla media né
+  // al rischio-per-trade uguale per tutti): UN SOLO scale_factor per tutti
+  // gli EA, che preserva i pesi relativi già determinati dal backtest.
+  const maxDailyLossCombined = Math.abs(Math.min(...losses));
+  const riskTargetDollar     = capital * optimalRisk / 100.0;
+  const scaleFactor          = maxDailyLossCombined > 0 ? riskTargetDollar / maxDailyLossCombined : 1.0;
+
+  const maxRiskDollar = capital * (maxRiskPerTradePct || 2.0) / 100.0; // solo per warning, non per lo scaling
 
   return eaComponents.map(comp => {
     const sizing = comp.lot_sizing_type || "fixed_lots";
+    const cur    = overrides[comp.symbol];
 
-    // ── Calcola lotti direttamente dal rischio per trade ──────────────────
-    // Principio: lots × (p90_dollar/base_lots) = capital × maxRisk%
-    // → lots = capital × maxRisk% × base_lots / p90_dollar
-    let paramName, paramValue, note, capped;
-    capped = false;
+    let paramName, paramValue, note, dollarPerMinLot = null;
 
     if (sizing === "sqx_fixed_money") {
-      // mmRiskedMoney è già il $ rischiat per trade: basta portarlo al limite
-      // del challenge capital. Non dipende da base_lots né da p90.
-      paramName  = "mmRiskedMoney";
-      paramValue = Math.round(maxRiskDollar * 100) / 100;
+      // mmRiskedMoney è già in $: nessun problema di lotto minimo qui.
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
-      note = "da $" + Math.round(mmBase) + " → $" + Math.round(paramValue)
-             + " (" + (maxRiskPerTradePct || 2) + "% di $" + capital + " per trade)";
+      paramName  = "mmRiskedMoney";
+      paramValue = Math.round(mmBase * scaleFactor * 100) / 100;
+      note = "da $" + Math.round(mmBase) + " → $" + Math.round(paramValue);
 
     } else if (sizing === "price_scaling_explicit") {
-      // rischio per lotto (backtest) = medianDollar / base_lots_backtest
-      const medianDollar = comp.median_single_trade_loss_dollar
-                           || (comp.median_single_trade_loss_pct / 100.0) * comp.initial_capital
-                           || (comp.p90_single_trade_loss_pct / 100.0) * comp.initial_capital;
-      const refLots = comp.base_lots || 0.01;
-      const riskPerLot = medianDollar > 0 ? medianDollar / refLots : 1;
+      const priceCorr = (cur && comp.defaultprice) ? comp.defaultprice / cur : 1.0;
       paramName  = "base_lots";
-      paramValue = riskPerLot > 0
-        ? Math.round(maxRiskDollar / riskPerLot * 10000) / 10000
-        : Math.round(refLots * 10000) / 10000;
-      note = "valido @ prezzo " + (comp.defaultprice) + "; l'EA scala automaticamente";
+      paramValue = Math.round(comp.base_lots * scaleFactor * priceCorr * 10000) / 10000;
+      note = "valido @ prezzo " + comp.defaultprice + "; l'EA scala automaticamente"
+             + (cur ? " | corretto per prezzo attuale " + cur : "");
+      dollarPerMinLot = estimateDollarRiskPerLot(comp, scaleFactor, minLot, cur, comp.defaultprice);
 
     } else if (sizing === "price_scaling_implicit") {
-      // stessa logica: rischio per lotto (backtest) = medianDollar / ref_lots_backtest
-      const medianDollar = comp.median_single_trade_loss_dollar
-                           || (comp.median_single_trade_loss_pct / 100.0) * comp.initial_capital
-                           || (comp.p90_single_trade_loss_pct / 100.0) * comp.initial_capital;
-      const refLots = comp.ref_lots || comp.base_lots || 0.01;
-      const riskPerLot = medianDollar > 0 ? medianDollar / refLots : 1;
+      const priceCorr = (cur && comp.ref_price) ? comp.ref_price / cur : 1.0;
       paramName  = "LotSize";
-      paramValue = riskPerLot > 0
-        ? Math.round(maxRiskDollar / riskPerLot * 10000) / 10000
-        : Math.round(refLots * 10000) / 10000;
-      note = "valido @ prezzo " + (comp.ref_price) + "; l'EA scala col prezzo";
+      paramValue = Math.round(comp.ref_lots * scaleFactor * priceCorr * 10000) / 10000;
+      note = "valido @ prezzo " + comp.ref_price + "; l'EA scala col prezzo"
+             + (cur ? " | corretto per prezzo attuale " + cur : "");
+      dollarPerMinLot = estimateDollarRiskPerLot(comp, scaleFactor, minLot, cur, comp.ref_price);
 
     } else {
-      // fixed_lots: rischio per lotto = p90_dollar_backtest / base_lots_backtest
-      const p90Pct = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 0;
-      const p90Dollar = (p90Pct / 100.0) * comp.initial_capital;
-      const refLots   = comp.base_lots || 0.01;
-      const riskPerLot = p90Dollar > 0 ? p90Dollar / refLots : 1;
       paramName  = "Lots";
-      paramValue = riskPerLot > 0
-        ? Math.round(maxRiskDollar / riskPerLot * 10000) / 10000
-        : Math.round(refLots * 10000) / 10000;
-      note = "lotti fissi | rischio/trade ≈ $" + Math.round(maxRiskDollar)
-             + " (" + (maxRiskPerTradePct || 2) + "% di $" + capital + ")";
+      paramValue = Math.round(comp.base_lots * scaleFactor * 10000) / 10000;
+      note = "lotti fissi";
+      dollarPerMinLot = estimateDollarRiskPerLot(comp, scaleFactor, minLot, cur, comp.defaultprice);
+    }
+
+    let warning = null, minLotStepOut = null, dollarRiskAtMinLot = null, minCapitalRecommended = null;
+    if (dollarPerMinLot != null && paramValue < minLot) {
+      warning = "Il lotto calcolato (" + paramValue + ") è sotto il minimo broker (" + minLot
+              + "). Al lotto minimo il rischio reale è ≈ $" + Math.round(dollarPerMinLot * 100) / 100
+              + ", non quello impostato.";
+      minLotStepOut = minLot;
+      dollarRiskAtMinLot = Math.round(dollarPerMinLot * 100) / 100;
+      minCapitalRecommended = riskTargetDollar > 0
+        ? Math.round(capital * dollarPerMinLot / riskTargetDollar)
+        : null;
     }
 
     // ── Rischio effettivo per singolo trade con i lotti calcolati ─────────
@@ -380,14 +471,31 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       param_name:                       paramName,
       param_value:                      paramValue,
       note,
-      trade_capped:                     capped,
       scale_factor:                     Math.round(lotRatio * 10000) / 10000,
       effective_single_trade_risk_dollar: effectiveSingleRisk,     // rischio teorico (SL)
       worst_case_single_trade_dollar:   worstCaseSingleRisk,       // peggior caso storico
       expected_avg_daily_loss_dollar:   avgEALoss ? Math.round(avgEALoss) : null,
       expected_max_daily_loss_dollar:   maxEALoss ? Math.round(maxEALoss) : null,
+      warning,
+      min_lot_step:                     minLotStepOut,
+      dollar_risk_at_min_lot:           dollarRiskAtMinLot,
+      min_capital_recommended:          minCapitalRecommended,
     };
   });
+}
+
+// ─── Stima $ rischiati dal lotto minimo broker per un EA, al fattore di scala dato ───
+function estimateDollarRiskPerLot(comp, scaleFactor, minLotStep, currentPrice, refPrice) {
+  const worstPct = comp.max_single_trade_loss_pct || comp.p90_single_trade_loss_pct;
+  const refLots  = comp.ref_lots || comp.base_lots || 0.01;
+  if (!worstPct || !refLots) return null;
+
+  const worstDollarBacktest = (worstPct / 100.0) * comp.initial_capital;
+  const riskPerLotBacktest  = worstDollarBacktest / refLots;
+
+  const priceRatio = (currentPrice && refPrice) ? currentPrice / refPrice : 1.0;
+  const riskPerLotScaled = riskPerLotBacktest * scaleFactor * priceRatio;
+  return riskPerLotScaled * minLotStep;
 }
 
 
@@ -397,7 +505,7 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
   // Applica il cap per-EA anche qui (a rischio dimezzato il cap potrebbe non
   // scattare più per alcuni EA).
   const built = buildCappedScaledSeries(
-    eaComponents, params.capital, riskPctFunded, params.max_risk_per_trade_pct
+    eaComponents, params.capital, riskPctFunded, params.max_risk_per_trade_pct, params.asset_price_overrides
   );
   const scaledArr = built.scaledArr;
   if (!scaledArr.length) return 0;
@@ -408,6 +516,11 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
   // Seed fisso anche qui per coerenza tra livelli di rischio
   const rand = mulberry32(67890);
   const nSims = Math.min(params.n_simulations, 2000);  // funded sim più leggera
+
+  const regimeWeights = (params.regime_weighted_bootstrap !== false)
+    ? computeRegimeWeights(scaledArr, params.regime_window_days)
+    : null;
+  const cumWeights = regimeWeights ? buildCumulative(regimeWeights) : null;
 
   // Limite massimo di giorni per simulazione funded (evita loop infiniti)
   // Un conto funded "sopravvive" mediamente molti mesi; cap a 2 anni
@@ -423,7 +536,9 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
 
     while (!violated && day < maxDays) {
       day++;
-      const dayPnl = scaledArr[Math.floor(rand() * scaledArr.length)];
+      const dayPnl = cumWeights
+        ? weightedChoice(scaledArr, cumWeights, rand)
+        : scaledArr[Math.floor(rand() * scaledArr.length)];
 
       if (dayPnl !== 0) {
         // Daily DD
@@ -451,39 +566,49 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
 
 // ─── Simulatore Conto Reale ───────────────────────────────────────────────────
 function runRealAccountSimulation(eaComponents, params, riskPct) {
-  // riskPct = rischio per singola operazione in % del capitale reale.
+  // riskPct = rischio target in % del capitale reale, ANCORATO al giorno
+  // peggiore storico del PORTAFOGLIO combinato (non al p90 del singolo EA).
   //
-  // SCALA FACTOR ($ assoluti, non %):
-  //   risk_per_trade_$ = capital * riskPct / 100
-  //   p90_loss_$       = p90_single_trade_loss_pct / 100 * initial_capital_backtest
-  //   factor           = risk_per_trade_$ / p90_loss_$
+  // UN SOLO scale_factor per tutto il portafoglio:
+  //   max_daily_loss_$ = giorno peggiore storico del portafoglio combinato (a lotti backtest)
+  //   risk_target_$     = ra_capital * riskPct / 100
+  //   scale_factor       = risk_target_$ / max_daily_loss_$
   //
-  // Questo è coerente con la logica del challenge simulator.
-  // Tutti gli EA vengono scalati in modo che il loro trade tipico (p90)
-  // rischi esattamente riskPct% del capitale reale.
+  // Applicato allo stesso modo a ogni EA (con eventuale correzione di prezzo
+  // per gli EA price_scaling_*) → i pesi relativi tra EA del backtest restano
+  // intatti, invece di essere azzerati normalizzando ognuno allo stesso rischio.
   //
   // COMPOUND: rimosso — lotti fissi per risultati affidabili.
 
-  const riskDollar = params.ra_capital * riskPct / 100.0;
+  const overrides = params.asset_price_overrides || {};
   const minLen = Math.min(...eaComponents.map(c => c.daily_pnl_dollar.length));
 
-  // Per ogni EA: factor = risk_per_trade_$ / p90_loss_$_backtest
+  // Serie combinata grezza (a lotti/parametri di backtest) per trovare il giorno peggiore
+  const rawCombined = new Array(minLen).fill(0);
+  for (const c of eaComponents) {
+    const arr = c.daily_pnl_dollar;
+    for (let i = 0; i < minLen; i++) rawCombined[i] += arr[arr.length - minLen + i];
+  }
+  const rawLosses = rawCombined.filter(x => x < 0);
+  const maxDailyLoss = rawLosses.length ? Math.abs(Math.min(...rawLosses)) : 1.0;
+
+  const riskDollar   = params.ra_capital * riskPct / 100.0;
+  const scaleFactor  = maxDailyLoss > 0 ? riskDollar / maxDailyLoss : 1.0;
+
+  // Per ogni EA: stesso scaleFactor, corretto solo per il prezzo attuale
+  // dell'asset se l'EA scala col prezzo (price_scaling_*)
   const eaFactors = [];
   const eaSeries  = [];
 
   for (const comp of eaComponents) {
     const sizing = comp.lot_sizing_type || "fixed_lots";
-    let factor;
+    const cur = overrides[comp.symbol];
+    let factor = scaleFactor;
 
-    if (sizing === "sqx_fixed_money") {
-      // mmRiskedMoney è già in $, semplicemente lo portiamo al rischio voluto
-      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
-      factor = riskDollar / mmBase;
-    } else {
-      // p90 in $ assoluti del backtest
-      const p90Pct = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 1.0;
-      const p90Dollar = (p90Pct / 100.0) * comp.initial_capital;
-      factor = p90Dollar > 0 ? riskDollar / p90Dollar : 1.0;
+    if (sizing === "price_scaling_explicit" && cur && comp.defaultprice) {
+      factor = scaleFactor * (comp.defaultprice / cur);
+    } else if (sizing === "price_scaling_implicit" && cur && comp.ref_price) {
+      factor = scaleFactor * (comp.ref_price / cur);
     }
 
     eaFactors.push(factor);
@@ -529,6 +654,13 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
   const blockSize = Math.max(1, Math.round(params.ra_block_size || 1));
   const nBlocks   = combinedDollar.length - blockSize + 1;
 
+  // Pesa i punti di partenza del blocco verso i regimi storici peggiori,
+  // invece di pescarli con probabilità uniforme (vedi computeRegimeWeights).
+  const startRegimeWeights = (params.regime_weighted_bootstrap !== false)
+    ? computeRegimeWeights(combinedDollar, params.regime_window_days)
+    : null;
+  const startCumWeights = startRegimeWeights ? buildCumulative(startRegimeWeights) : null;
+
   for (let s = 0; s < nSims; s++) {
     let balance     = params.ra_capital;
     let peakBalance = balance;
@@ -539,7 +671,10 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
 
     while (dayCount < maxHorizonDays) {
       // Block bootstrap: campiona un blocco di giorni consecutivi
-      const blockStart = Math.floor(rand() * (blockSize > 1 ? nBlocks : combinedDollar.length));
+      const nStarts = blockSize > 1 ? nBlocks : combinedDollar.length;
+      const blockStart = startCumWeights
+        ? Math.min(weightedIndex(combinedDollar.length, startCumWeights, rand), nStarts - 1)
+        : Math.floor(rand() * nStarts);
       const blockEnd   = Math.min(blockStart + blockSize, combinedDollar.length);
 
       for (let bi = blockStart; bi < blockEnd && dayCount < maxHorizonDays; bi++) {
@@ -614,13 +749,32 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
       paramValue = Math.round(comp.ref_lots * factor * 10000) / 10000;
       note       = "valido @ prezzo " + comp.ref_price + "; l'EA scala col prezzo";
     } else if (sizing === "sqx_fixed_money") {
+      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
       paramName  = "mmRiskedMoney";
-      paramValue = Math.round(riskDollar * 100) / 100;
-      note       = "= " + riskPct + "% di $" + params.ra_capital + " = $" + Math.round(riskDollar);
+      paramValue = Math.round(mmBase * factor * 100) / 100;
+      note       = "da $" + Math.round(mmBase) + " → $" + paramValue
+                 + " (peso relativo del backtest preservato)";
     } else {
       paramName  = "Lots";
       paramValue = Math.round(comp.base_lots * factor * 10000) / 10000;
       note       = "lotti fissi";
+    }
+
+    const minLot = params.min_lot_step || 0.01;
+    let warning = null, dollarRiskAtMinLot = null, minCapitalRecommended = null;
+    if (sizing !== "sqx_fixed_money" && paramValue < minLot) {
+      const cur = overrides[comp.symbol];
+      const refP = sizing === "price_scaling_implicit" ? comp.ref_price : comp.defaultprice;
+      const dollarPerMinLot = estimateDollarRiskPerLot(comp, scaleFactor, minLot, cur, refP);
+      if (dollarPerMinLot != null) {
+        warning = "Il lotto calcolato (" + paramValue + ") è sotto il minimo broker (" + minLot
+                + "). Al lotto minimo il rischio reale è ≈ $" + Math.round(dollarPerMinLot * 100) / 100
+                + ", non quello impostato.";
+        dollarRiskAtMinLot = Math.round(dollarPerMinLot * 100) / 100;
+        minCapitalRecommended = riskDollar > 0
+          ? Math.round(params.ra_capital * dollarPerMinLot / riskDollar)
+          : null;
+      }
     }
 
     return {
@@ -630,6 +784,9 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
       param_value: paramValue,
       note,
       factor:      Math.round(factor * 10000) / 10000,
+      warning,
+      dollar_risk_at_min_lot:  dollarRiskAtMinLot,
+      min_capital_recommended: minCapitalRecommended,
     };
   });
 
@@ -652,25 +809,28 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
 
   const riskDollar = params.ra_capital * riskPct / 100.0;
   const minLen = Math.min(...eaComponents.map(c => c.daily_pnl_dollar.length));
+  const overrides = params.asset_price_overrides || {};
 
-  // Calcola factor per ogni EA (stesso metodo di runRealAccountSimulation)
+  // UN SOLO scale_factor di portafoglio (stesso metodo di runRealAccountSimulation),
+  // ancorato al giorno peggiore storico del portafoglio combinato.
+  const rawCombined = new Array(minLen).fill(0);
+  for (const c of eaComponents) {
+    const arr = c.daily_pnl_dollar;
+    for (let i = 0; i < minLen; i++) rawCombined[i] += arr[arr.length - minLen + i];
+  }
+  const rawLosses = rawCombined.filter(x => x < 0);
+  const maxDailyLoss = rawLosses.length ? Math.abs(Math.min(...rawLosses)) : 1.0;
+  const scaleFactor  = maxDailyLoss > 0 ? riskDollar / maxDailyLoss : 1.0;
+
   const eaSeries = [];
   for (const comp of eaComponents) {
     const sizing = comp.lot_sizing_type || "fixed_lots";
-    let factor;
-    if (sizing === "sqx_fixed_money") {
-      const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
-      factor = riskDollar / mmBase;
-    } else if (sizing === "price_scaling_explicit" || sizing === "price_scaling_implicit") {
-      // Rischio $ costante: usa mediana in $ assoluti come stima SL teorico
-      const medianDollar = comp.median_single_trade_loss_dollar
-                           || (comp.median_single_trade_loss_pct / 100.0) * comp.initial_capital
-                           || (comp.p90_single_trade_loss_pct / 100.0) * comp.initial_capital;
-      factor = medianDollar > 0 ? riskDollar / medianDollar : 1.0;
-    } else {
-      const p90Pct    = comp.p90_single_trade_loss_pct || comp.max_single_trade_loss_pct || 1.0;
-      const p90Dollar = (p90Pct / 100.0) * comp.initial_capital;
-      factor = p90Dollar > 0 ? riskDollar / p90Dollar : 1.0;
+    const cur = overrides[comp.symbol];
+    let factor = scaleFactor;
+    if (sizing === "price_scaling_explicit" && cur && comp.defaultprice) {
+      factor = scaleFactor * (comp.defaultprice / cur);
+    } else if (sizing === "price_scaling_implicit" && cur && comp.ref_price) {
+      factor = scaleFactor * (comp.ref_price / cur);
     }
     // Serie in % del capitale REALE (per applicare compound correttamente).
     // Logica: pnlDay = pctSeries × balance_corrente
@@ -713,6 +873,11 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
   const cBlockSize = Math.max(1, Math.round(params.ra_block_size || 1));
   const cNBlocks   = combinedPct.length - cBlockSize + 1;
 
+  const compRegimeWeights = (params.regime_weighted_bootstrap !== false)
+    ? computeRegimeWeights(combinedPct, params.regime_window_days)
+    : null;
+  const compCumWeights = compRegimeWeights ? buildCumulative(compRegimeWeights) : null;
+
   for (let s = 0; s < nSims; s++) {
     let balance     = params.ra_capital;
     let peakBalance = balance;
@@ -722,7 +887,10 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
     let dayCount    = 0;
 
     while (dayCount < maxDays) {
-      const blockStart = Math.floor(rand() * (cBlockSize > 1 ? Math.max(cNBlocks,1) : combinedPct.length));
+      const cNStarts = cBlockSize > 1 ? Math.max(cNBlocks, 1) : combinedPct.length;
+      const blockStart = compCumWeights
+        ? Math.min(weightedIndex(combinedPct.length, compCumWeights, rand), cNStarts - 1)
+        : Math.floor(rand() * cNStarts);
       const blockEnd   = Math.min(blockStart + cBlockSize, combinedPct.length);
 
       for (let bi = blockStart; bi < blockEnd && dayCount < maxDays; bi++) {
@@ -975,7 +1143,7 @@ self.onmessage = function(e) {
 
   const lotRecs = computeLotRecommendations(
     daily_pnl_dollar, ea_components, params.capital, optimalRisk,
-    params.max_risk_per_trade_pct
+    params.max_risk_per_trade_pct, params.asset_price_overrides, params.min_lot_step
   );
 
   self.postMessage({
@@ -1076,6 +1244,83 @@ function loadFirms() {
 }
 function saveFirms(f) {
   try { localStorage.setItem("prop_firms_v2", JSON.stringify(f)); } catch {}
+}
+
+// ─── Prezzi asset correnti (per correggere gli EA price_scaling_* e i calcoli
+//     di rischio minimo — vedi buildCappedScaledSeries / computeLotRecommendations) ─
+function loadAssetPrices() {
+  try {
+    const s = localStorage.getItem("asset_price_overrides_v1");
+    return s ? JSON.parse(s) : {};
+  } catch { return {}; }
+}
+function saveAssetPrices(p) {
+  try { localStorage.setItem("asset_price_overrides_v1", JSON.stringify(p)); } catch {}
+}
+
+// Pannello compatto per inserire/modificare i prezzi correnti degli asset.
+// symbols: elenco simboli rilevanti (ricavati dal portafoglio/EA selezionato)
+// prices: { symbol: prezzo }, onChange(nextPrices)
+function AssetPricePanel({ symbols, prices, onChange }) {
+  const [newSymbol, setNewSymbol] = useState("");
+  const [newPrice,  setNewPrice]  = useState("");
+
+  const relevantMissing = symbols.filter(s => s && !(s in prices));
+  const entries = Object.keys(prices);
+
+  function setPrice(sym, val) {
+    const v = parseFloat(val);
+    const next = { ...prices };
+    if (val === "" || isNaN(v)) delete next[sym];
+    else next[sym] = v;
+    onChange(next);
+  }
+  function addNew() {
+    if (!newSymbol.trim() || !newPrice) return;
+    setPrice(newSymbol.trim().toUpperCase(), newPrice);
+    setNewSymbol(""); setNewPrice("");
+  }
+
+  return (
+    <div style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-md)",
+                  padding: "0.75rem", marginBottom: "1rem", background: "var(--bg-surface)" }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "var(--text-secondary)", marginBottom: 6 }}>
+        Prezzi correnti asset (correggono gli EA che scalano col prezzo, es. oro/indici)
+      </div>
+      {relevantMissing.length > 0 && (
+        <div style={{ fontSize: 11, color: "var(--warning, #d97706)", marginBottom: 6 }}>
+          Mancano i prezzi per: {relevantMissing.join(", ")} — verrà usato il prezzo di backtest.
+        </div>
+      )}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: 6 }}>
+        {entries.map(sym => (
+          <div key={sym} style={{ display: "flex", alignItems: "center", gap: 4,
+                                   border: "1px solid var(--border)", borderRadius: 6, padding: "2px 6px" }}>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>{sym}</span>
+            <input type="number" value={prices[sym]} onChange={e => setPrice(sym, e.target.value)}
+                   style={{ width: 80, fontSize: 12, border: "none", background: "transparent" }} />
+            <button onClick={() => setPrice(sym, "")}
+                    style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
+              <X size={12} />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: "0.5rem" }}>
+        <input placeholder="Simbolo (es. XAUUSD)" value={newSymbol}
+               onChange={e => setNewSymbol(e.target.value)}
+               style={{ fontSize: 12, padding: "4px 6px", border: "1px solid var(--border)", borderRadius: 6, width: 140 }} />
+        <input placeholder="Prezzo" type="number" value={newPrice}
+               onChange={e => setNewPrice(e.target.value)}
+               style={{ fontSize: 12, padding: "4px 6px", border: "1px solid var(--border)", borderRadius: 6, width: 90 }} />
+        <button onClick={addNew}
+                style={{ fontSize: 12, padding: "4px 10px", border: "1px solid var(--accent)",
+                         background: "var(--accent-dim)", color: "var(--accent)", borderRadius: 6, cursor: "pointer" }}>
+          Aggiungi
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function fmt(v, dec = 2) {
@@ -1262,6 +1507,8 @@ function ChallengeSimulator({ firms }) {
   const [riskStep,       setRiskStep]       = useState(0.25);
   const [nSim,           setNSim]           = useState(3000);
   const [maxRiskPerTrade, setMaxRiskPerTrade] = useState(2.0);
+  const [assetPrices, setAssetPrices] = useState(loadAssetPrices);
+  useEffect(() => { saveAssetPrices(assetPrices); }, [assetPrices]);
   // Parametri economici per il criterio EV/giorno
   const [costChallenge,  setCostChallenge]  = useState(500);
   const [profitShare,    setProfitShare]    = useState(80);
@@ -1307,6 +1554,7 @@ function ChallengeSimulator({ firms }) {
       const dailyDollar = ea.daily_pnl_pct.map(p => p / 100.0 * initial);
       const components  = [{
         ea_name:                  selId,
+        symbol:                   ea.symbol || "",
         initial_capital:          initial,
         base_lots:                ea.base_lots || 0.01,
         lot_sizing_type:          ea.lot_sizing_type || "fixed_lots",
@@ -1338,6 +1586,7 @@ function ChallengeSimulator({ firms }) {
       const dailyDollar = ea.daily_pnl_pct.map(p => p / 100.0 * initial);
       components.push({
         ea_name:                   eaName,
+        symbol:                    ea.symbol || "",
         initial_capital:           initial,
         base_lots:                 ea.base_lots || 0.01,
         lot_sizing_type:           ea.lot_sizing_type || "fixed_lots",
@@ -1398,6 +1647,8 @@ function ChallengeSimulator({ firms }) {
         ra_custom_days:    showCustom ? customDays : 0,
         n_simulations:     nSim,
         max_risk_per_trade_pct: maxRiskPerTrade,
+        asset_price_overrides:  assetPrices,
+        min_lot_step:           0.01,
       }
     });
   }
@@ -1455,6 +1706,8 @@ function ChallengeSimulator({ firms }) {
         risk_step_pct:        riskStep,
         n_simulations:        nSim,
         max_risk_per_trade_pct: maxRiskPerTrade,
+        asset_price_overrides:  assetPrices,
+        min_lot_step:           0.01,
         cost_challenge:       costChallenge,
         profit_share:         profitShare / 100,
         tax_rate:             taxRate / 100,
@@ -1569,6 +1822,20 @@ function ChallengeSimulator({ firms }) {
                 </div>
               )}
             </Card>
+
+            <AssetPricePanel
+              symbols={
+                selType === "ea"
+                  ? [btData?.ea_pool?.[selId]?.symbol].filter(Boolean)
+                  : [...new Set(
+                      (btData?.portfolio_collections?.[selColl]?.[parseInt(selId)]?.ea_list || [])
+                        .map(n => btData?.ea_pool?.[n]?.symbol)
+                        .filter(Boolean)
+                    )]
+              }
+              prices={assetPrices}
+              onChange={setAssetPrices}
+            />
 
             {/* Parametri prop firm */}
             <Card>
@@ -2002,6 +2269,8 @@ function RealAccountSimulator() {
   const [nSim,      setNSim]      = useState(3000);
   const [ruinPct,      setRuinPct]      = useState(60);
   const [maxRiskPerTrade, setMaxRiskPerTrade] = useState(2.0);
+  const [assetPrices, setAssetPrices] = useState(loadAssetPrices);
+  useEffect(() => { saveAssetPrices(assetPrices); }, [assetPrices]);
   const [pRuinMax,     setPRuinMax]     = useState(5);   // % max P(rovina) per ottimale
   const [pDD30Max,     setPDD30Max]     = useState(30);  // % max P(DD>30%) per ottimale
   const [blockSize,    setBlockSize]    = useState(1);   // giorni per block bootstrap (1=classico)
@@ -2033,7 +2302,7 @@ function RealAccountSimulator() {
       return {
         dailyDollar,
         components: [{
-          ea_name: selId, initial_capital: initial,
+          ea_name: selId, symbol: ea.symbol || "", initial_capital: initial,
           base_lots: ea.base_lots || 0.01, lot_sizing_type: ea.lot_sizing_type || "fixed_lots",
           defaultprice: ea.defaultprice || 0, mm_risked_money: ea.mm_risked_money || 0,
           ref_price: ea.ref_price || 0, ref_lots: ea.ref_lots || ea.base_lots || 0.01,
@@ -2055,7 +2324,7 @@ function RealAccountSimulator() {
       const initial     = ea.initial_capital || 100000;
       const dailyDollar = ea.daily_pnl_pct.map(p => p / 100.0 * initial);
       components.push({
-        ea_name: eaName, initial_capital: initial,
+        ea_name: eaName, symbol: ea.symbol || "", initial_capital: initial,
         base_lots: ea.base_lots || 0.01, lot_sizing_type: ea.lot_sizing_type || "fixed_lots",
         defaultprice: ea.defaultprice || 0, mm_risked_money: ea.mm_risked_money || 0,
         ref_price: ea.ref_price || 0, ref_lots: ea.ref_lots || ea.base_lots || 0.01,
@@ -2102,6 +2371,8 @@ function RealAccountSimulator() {
         ra_custom_days:    showCustom ? customDays : 0,
         n_simulations:     nSim,
         max_risk_per_trade_pct: maxRiskPerTrade,
+        asset_price_overrides:  assetPrices,
+        min_lot_step:           0.01,
       }
     });
   }
@@ -2140,6 +2411,8 @@ function RealAccountSimulator() {
         risk_step_pct:  riskStep,
         n_simulations:  nSim,
         max_risk_per_trade_pct: maxRiskPerTrade,
+        asset_price_overrides:  assetPrices,
+        min_lot_step:           0.01,
       }
     });
   }
@@ -2212,6 +2485,20 @@ function RealAccountSimulator() {
                 </div>
               )}
             </Card>
+
+            <AssetPricePanel
+              symbols={
+                selType === "ea"
+                  ? [btData?.ea_pool?.[selId]?.symbol].filter(Boolean)
+                  : [...new Set(
+                      (btData?.portfolio_collections?.[selColl]?.[parseInt(selId)]?.ea_list || [])
+                        .map(n => btData?.ea_pool?.[n]?.symbol)
+                        .filter(Boolean)
+                    )]
+              }
+              prices={assetPrices}
+              onChange={setAssetPrices}
+            />
 
             {/* Parametri conto */}
             <Card>
