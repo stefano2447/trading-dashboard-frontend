@@ -407,8 +407,16 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
               + ", non quello impostato.";
       minLotStepOut = minLot;
       dollarRiskAtMinLot = Math.round(dollarPerMinLot * 100) / 100;
-      minCapitalRecommended = riskTargetDollar > 0
-        ? Math.round(capital * dollarPerMinLot / riskTargetDollar)
+      // paramValue è lineare nel capitale (a parità di risk_pct): il capitale
+      // che serve a portare QUESTO lotto esattamente al minimo broker è
+      // capital × (minLot / paramValue). La versione precedente divideva per
+      // riskTargetDollar (il target dell'INTERO portafoglio sul giorno
+      // peggiore), non per il rischio effettivo di questo EA — sottostimava
+      // il capitale minimo di un fattore pari al peso relativo dell'EA nel
+      // portafoglio (poteva mostrare "capitale minimo: $X" anche quando il
+      // capitale corrente era già > $X, pur avendo il warning attivo).
+      minCapitalRecommended = paramValue > 0
+        ? Math.round(capital * (minLot / paramValue))
         : null;
     }
 
@@ -683,7 +691,16 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
         dayCount++;
         const day    = dayCount;
         const pnlDay = combinedDollar[bi];
-      if (pnlDay !== 0) {
+        // Una volta "rovinato" il conto si considera chiuso: niente altro
+        // trading, il balance resta fermo. In una versione precedente il
+        // balance continuava ad aggiornarsi anche dopo la rovina e veniva
+        // "riportato su" al floor ogni volta che scendeva sotto la soglia
+        // — quindi poteva risalire nei giorni successivi come se nulla
+        // fosse. Questo faceva sembrare artificialmente sicuri i livelli
+        // di rischio alti (P(rovina) e rendimento medio non venivano
+        // penalizzati a sufficienza), portando l'ottimizzatore a scegliere
+        // rischi eccessivi come "ottimali".
+        if (pnlDay !== 0 && !ruined) {
           balance += pnlDay;
           if (balance < 0) balance = 0;
           if (balance > peakBalance) peakBalance = balance;
@@ -773,8 +790,11 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
                 + "). Al lotto minimo il rischio reale è ≈ $" + Math.round(dollarPerMinLot * 100) / 100
                 + ", non quello impostato.";
         dollarRiskAtMinLot = Math.round(dollarPerMinLot * 100) / 100;
-        minCapitalRecommended = riskDollar > 0
-          ? Math.round(params.ra_capital * dollarPerMinLot / riskDollar)
+        // Vedi nota in computeLotRecommendations: capitale necessario =
+        // capitale attuale × (lotto minimo / lotto calcolato), non diviso
+        // per il target di rischio dell'intero portafoglio.
+        minCapitalRecommended = paramValue > 0
+          ? Math.round(params.ra_capital * (minLot / paramValue))
           : null;
       }
     }
