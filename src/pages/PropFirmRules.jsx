@@ -770,21 +770,28 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
     if (sizing === "price_scaling_explicit") {
       paramName  = "base_lots";
       paramValue = Math.round(comp.base_lots * factor * 10000) / 10000;
-      note       = "valido @ prezzo " + comp.defaultprice + "; l'EA scala automaticamente";
+      note       = "valido @ prezzo " + comp.defaultprice + "; l'EA scala automaticamente"
+                 + " | factor " + (Math.round(factor * 10000) / 10000)
+                 + " | base_lots backtest " + comp.base_lots;
     } else if (sizing === "price_scaling_implicit") {
       paramName  = "LotSize";
       paramValue = Math.round(comp.ref_lots * factor * 10000) / 10000;
-      note       = "valido @ prezzo " + comp.ref_price + "; l'EA scala col prezzo";
+      note       = "valido @ prezzo " + comp.ref_price + "; l'EA scala col prezzo"
+                 + " | factor " + (Math.round(factor * 10000) / 10000)
+                 + " | ref_lots backtest " + comp.ref_lots;
     } else if (sizing === "sqx_fixed_money") {
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
       paramName  = "mmRiskedMoney";
       paramValue = Math.round(mmBase * factor * 100) / 100;
       note       = "da $" + Math.round(mmBase) + " → $" + paramValue
-                 + " (peso relativo del backtest preservato)";
+                 + " (peso relativo del backtest preservato)"
+                 + " | factor " + (Math.round(factor * 10000) / 10000);
     } else {
       paramName  = "Lots";
       paramValue = Math.round(comp.base_lots * factor * 10000) / 10000;
-      note       = "lotti fissi";
+      note       = "lotti fissi"
+                 + " | factor " + (Math.round(factor * 10000) / 10000)
+                 + " | base_lots backtest " + comp.base_lots;
     }
 
     const minLot = params.min_lot_step || 0.01;
