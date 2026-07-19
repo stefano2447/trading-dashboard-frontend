@@ -377,26 +377,33 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
     let paramName, paramValue, note, dollarPerMinLot = null;
 
     if (sizing === "sqx_fixed_money") {
-      // mmRiskedMoney è già in $: nessun problema di lotto minimo qui.
+      // mmRiskedMoney è in $, ma l'EA calcola comunque un lotto internamente
+      // in base allo SL: se al target il lotto implicito scende sotto il
+      // minimo broker, il rischio reale supera quello configurato — vedi
+      // controllo dedicato più sotto (usa loss_per_lot_dollar_p90 empirico).
       const mmBase = comp.mm_risked_money || comp.initial_capital * 0.01;
       paramName  = "mmRiskedMoney";
       paramValue = Math.round(mmBase * scaleFactor * 100) / 100;
       note = "da $" + Math.round(mmBase) + " → $" + Math.round(paramValue);
 
     } else if (sizing === "price_scaling_explicit") {
-      const priceCorr = (cur && comp.defaultprice) ? comp.defaultprice / cur : 1.0;
+      const priceCorr = (cur && comp.defaultprice && !comp.self_adjusts_lot_by_price) ? comp.defaultprice / cur : 1.0;
       paramName  = "base_lots";
       paramValue = Math.round(comp.base_lots * scaleFactor * priceCorr * 10000) / 10000;
       note = "valido @ prezzo " + comp.defaultprice + "; l'EA scala automaticamente"
-             + (cur ? " | corretto per prezzo attuale " + cur : "");
+             + (comp.self_adjusts_lot_by_price
+                ? " (già corretto internamente dall'EA, nessun aggiustamento manuale applicato)"
+                : (cur ? " | corretto per prezzo attuale " + cur : ""));
       dollarPerMinLot = estimateDollarRiskPerLot(comp, scaleFactor, minLot, cur, comp.defaultprice);
 
     } else if (sizing === "price_scaling_implicit") {
-      const priceCorr = (cur && comp.ref_price) ? comp.ref_price / cur : 1.0;
+      const priceCorr = (cur && comp.ref_price && !comp.self_adjusts_lot_by_price) ? comp.ref_price / cur : 1.0;
       paramName  = "LotSize";
       paramValue = Math.round(comp.ref_lots * scaleFactor * priceCorr * 10000) / 10000;
       note = "valido @ prezzo " + comp.ref_price + "; l'EA scala col prezzo"
-             + (cur ? " | corretto per prezzo attuale " + cur : "");
+             + (comp.self_adjusts_lot_by_price
+                ? " (già corretto internamente dall'EA, nessun aggiustamento manuale applicato)"
+                : (cur ? " | corretto per prezzo attuale " + cur : ""));
       dollarPerMinLot = estimateDollarRiskPerLot(comp, scaleFactor, minLot, cur, comp.ref_price);
 
     } else {
@@ -406,24 +413,56 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       dollarPerMinLot = estimateDollarRiskPerLot(comp, scaleFactor, minLot, cur, comp.defaultprice);
     }
 
+    // Lotto INTERNO stimato che l'EA proverà davvero ad aprire: per gli EA
+    // self_adjusts_lot_by_price, paramValue è il valore da INSERIRE (già
+    // coerente col backtest, senza correzione), ma l'EA lo riadatta
+    // internamente al prezzo corrente prima di piazzare l'ordine. Se quel
+    // valore riadattato scende sotto il minimo broker, l'EA apre comunque
+    // il minimo — rischiando più del previsto. Va controllato QUESTO
+    // valore (non paramValue) per il warning.
+    const refPriceForInternal = comp.defaultprice || comp.ref_price || 0;
+    const internalLot = (comp.self_adjusts_lot_by_price && cur && refPriceForInternal && paramValue)
+      ? paramValue * (refPriceForInternal / cur)
+      : paramValue;
+
     let warning = null, minLotStepOut = null, dollarRiskAtMinLot = null, minCapitalRecommended = null;
-    if (dollarPerMinLot != null && paramValue < minLot) {
-      warning = "Il lotto calcolato (" + paramValue + ") è sotto il minimo broker (" + minLot
-              + "). Al lotto minimo il rischio reale è ≈ $" + Math.round(dollarPerMinLot * 100) / 100
-              + ", non quello impostato.";
+    if (dollarPerMinLot != null && internalLot < minLot) {
+      if (comp.self_adjusts_lot_by_price && internalLot !== paramValue) {
+        warning = "Il valore da inserire è " + paramValue + ", ma l'EA lo riadatta internamente al prezzo attuale ("
+                + cur + ") a ≈" + (Math.round(internalLot * 100000) / 100000)
+                + ", sotto il minimo broker (" + minLot + "). L'EA aprirà comunque " + minLot
+                + ", rischiando ≈$" + Math.round(dollarPerMinLot * 100) / 100 + " invece del previsto.";
+      } else {
+        warning = "Il lotto calcolato (" + paramValue + ") è sotto il minimo broker (" + minLot
+                + "). Al lotto minimo il rischio reale è ≈ $" + Math.round(dollarPerMinLot * 100) / 100
+                + ", non quello impostato.";
+      }
       minLotStepOut = minLot;
       dollarRiskAtMinLot = Math.round(dollarPerMinLot * 100) / 100;
-      // paramValue è lineare nel capitale (a parità di risk_pct): il capitale
-      // che serve a portare QUESTO lotto esattamente al minimo broker è
-      // capital × (minLot / paramValue). La versione precedente divideva per
-      // riskTargetDollar (il target dell'INTERO portafoglio sul giorno
-      // peggiore), non per il rischio effettivo di questo EA — sottostimava
-      // il capitale minimo di un fattore pari al peso relativo dell'EA nel
-      // portafoglio (poteva mostrare "capitale minimo: $X" anche quando il
-      // capitale corrente era già > $X, pur avendo il warning attivo).
-      minCapitalRecommended = paramValue > 0
-        ? Math.round(capital * (minLot / paramValue))
+      // Il capitale necessario va calcolato sul lotto INTERNO stimato (non su
+      // paramValue grezzo, che per gli EA self_adjusts può sembrare già
+      // sopra il minimo pur non essendolo davvero a runtime):
+      // capital × (minLot / internalLot).
+      minCapitalRecommended = internalLot > 0
+        ? Math.round(capital * (minLot / internalLot))
         : null;
+    } else if (sizing === "sqx_fixed_money" && comp.loss_per_lot_dollar_p90 > 0) {
+      // loss_per_lot_dollar_p90 è il rischio $ per 1 lotto osservato
+      // EMPIRICAMENTE sui trade reali del backtest (non una % teorica) — è
+      // una proprietà dello SL/strumento, non scala col capitale, quindi si
+      // applica direttamente senza scaleFactor.
+      const impliedLot = paramValue / comp.loss_per_lot_dollar_p90;
+      if (impliedLot < minLot) {
+        const dollarPerMinLotMM = minLot * comp.loss_per_lot_dollar_p90;
+        warning = "Il rischio configurato ($" + paramValue + ") implica un lotto (" + Math.round(impliedLot * 10000) / 10000
+                + ") sotto il minimo broker (" + minLot + "). Al lotto minimo il rischio reale storico è ≈ $"
+                + Math.round(dollarPerMinLotMM * 100) / 100 + ", non i $" + paramValue + " configurati.";
+        minLotStepOut = minLot;
+        dollarRiskAtMinLot = Math.round(dollarPerMinLotMM * 100) / 100;
+        minCapitalRecommended = impliedLot > 0
+          ? Math.round(capital * (minLot / impliedLot))
+          : null;
+      }
     }
 
     // ── Rischio effettivo per singolo trade con i lotti calcolati ─────────
@@ -502,12 +541,19 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
 
 // ─── Stima $ rischiati dal lotto minimo broker per un EA, al fattore di scala dato ───
 function estimateDollarRiskPerLot(comp, scaleFactor, minLotStep, currentPrice, refPrice) {
-  const worstPct = comp.max_single_trade_loss_pct || comp.p90_single_trade_loss_pct;
-  const refLots  = comp.ref_lots || comp.base_lots || 0.01;
-  if (!worstPct || !refLots) return null;
+  // IMPORTANTE: deve usare la STESSA base che produce param_value (base_lots/
+  // ref_lots × scaleFactor), altrimenti il "rischio al lotto minimo" mostrato
+  // e il "capitale minimo consigliato" derivano da basi diverse e sembrano
+  // contraddittori — vedi analoga nota nella versione Python
+  // (_estimate_dollar_risk_per_lot in backtest.py).
+  const refLots = comp.ref_lots || comp.base_lots || 0.01;
+  if (!comp.daily_pnl_dollar || !comp.daily_pnl_dollar.length || !refLots) return null;
 
-  const worstDollarBacktest = (worstPct / 100.0) * comp.initial_capital;
-  const riskPerLotBacktest  = worstDollarBacktest / refLots;
+  const losses = comp.daily_pnl_dollar.filter(x => x < 0);
+  if (!losses.length) return null;
+
+  const worstDayDollarBacktest = Math.abs(Math.min(...losses));
+  const riskPerLotBacktest     = worstDayDollarBacktest / refLots;
 
   const priceRatio = (currentPrice && refPrice) ? currentPrice / refPrice : 1.0;
   const riskPerLotScaled = riskPerLotBacktest * scaleFactor * priceRatio;
@@ -623,11 +669,15 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
     const cur = overrides[comp.symbol];
     let factor = scaleFactor;
 
-    if (sizing === "price_scaling_explicit" && cur && comp.defaultprice) {
+    if (sizing === "price_scaling_explicit" && cur && comp.defaultprice && !comp.self_adjusts_lot_by_price) {
       factor = scaleFactor * (comp.defaultprice / cur);
-    } else if (sizing === "price_scaling_implicit" && cur && comp.ref_price) {
+    } else if (sizing === "price_scaling_implicit" && cur && comp.ref_price && !comp.self_adjusts_lot_by_price) {
       factor = scaleFactor * (comp.ref_price / cur);
     }
+    // Se self_adjusts_lot_by_price è true, l'EA corregge già da solo SL/TP/
+    // lotti in base al prezzo corrente (parametro "adjustlotsizevariables"):
+    // applicare qui una correzione manuale duplicherebbe l'aggiustamento,
+    // producendo un lotto finale molto più piccolo del corretto.
 
     eaFactors.push(factor);
 
@@ -796,20 +846,55 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
 
     const minLot = params.min_lot_step || 0.01;
     let warning = null, dollarRiskAtMinLot = null, minCapitalRecommended = null;
-    if (sizing !== "sqx_fixed_money" && paramValue < minLot) {
+
+    if (sizing !== "sqx_fixed_money") {
       const cur = overrides[comp.symbol];
       const refP = sizing === "price_scaling_implicit" ? comp.ref_price : comp.defaultprice;
       const dollarPerMinLot = estimateDollarRiskPerLot(comp, scaleFactor, minLot, cur, refP);
-      if (dollarPerMinLot != null) {
-        warning = "Il lotto calcolato (" + paramValue + ") è sotto il minimo broker (" + minLot
-                + "). Al lotto minimo il rischio reale è ≈ $" + Math.round(dollarPerMinLot * 100) / 100
-                + ", non quello impostato.";
+
+      // Lotto INTERNO stimato: per gli EA self_adjusts_lot_by_price, paramValue
+      // è il valore da inserire (senza correzione), ma l'EA lo riadatta al
+      // prezzo corrente prima di aprire l'ordine — va controllato QUESTO
+      // valore, non paramValue, altrimenti si perde il caso "paramValue è
+      // sopra il minimo ma il lotto che l'EA aprirà davvero è sotto".
+      const internalLot = (comp.self_adjusts_lot_by_price && cur && refP && paramValue)
+        ? paramValue * (refP / cur)
+        : paramValue;
+
+      if (dollarPerMinLot != null && internalLot < minLot) {
+        if (comp.self_adjusts_lot_by_price && internalLot !== paramValue) {
+          warning = "Il valore da inserire è " + paramValue + ", ma l'EA lo riadatta internamente al prezzo attuale ("
+                  + cur + ") a ≈" + (Math.round(internalLot * 100000) / 100000)
+                  + ", sotto il minimo broker (" + minLot + "). L'EA aprirà comunque " + minLot
+                  + ", rischiando ≈$" + Math.round(dollarPerMinLot * 100) / 100 + " invece del previsto.";
+        } else {
+          warning = "Il lotto calcolato (" + paramValue + ") è sotto il minimo broker (" + minLot
+                  + "). Al lotto minimo il rischio reale è ≈ $" + Math.round(dollarPerMinLot * 100) / 100
+                  + ", non quello impostato.";
+        }
         dollarRiskAtMinLot = Math.round(dollarPerMinLot * 100) / 100;
-        // Vedi nota in computeLotRecommendations: capitale necessario =
-        // capitale attuale × (lotto minimo / lotto calcolato), non diviso
-        // per il target di rischio dell'intero portafoglio.
-        minCapitalRecommended = paramValue > 0
-          ? Math.round(params.ra_capital * (minLot / paramValue))
+        minCapitalRecommended = internalLot > 0
+          ? Math.round(params.ra_capital * (minLot / internalLot))
+          : null;
+      }
+    } else if (sizing === "sqx_fixed_money" && comp.loss_per_lot_dollar_p90 > 0) {
+      // Anche per gli EA a rischio $ il lotto è calcolato internamente
+      // dall'EA in base allo SL — se il capitale è troppo basso, il lotto
+      // implicito scende sotto il minimo broker e MT5 arrotonda per
+      // eccesso: il rischio reale supera quello configurato in
+      // mmRiskedMoney. loss_per_lot_dollar_p90 è il rischio $ per 1 lotto
+      // osservato EMPIRICAMENTE sui trade reali del backtest (non una %
+      // teorica) — è una proprietà dello SL/strumento, non scala col
+      // capitale, quindi si applica direttamente senza scaleFactor.
+      const impliedLot = paramValue / comp.loss_per_lot_dollar_p90;
+      if (impliedLot < minLot) {
+        const dollarPerMinLot = minLot * comp.loss_per_lot_dollar_p90;
+        warning = "Il rischio configurato ($" + paramValue + ") implica un lotto (" + Math.round(impliedLot * 10000) / 10000
+                + ") sotto il minimo broker (" + minLot + "). Al lotto minimo il rischio reale storico è ≈ $"
+                + Math.round(dollarPerMinLot * 100) / 100 + ", non i $" + paramValue + " configurati.";
+        dollarRiskAtMinLot = Math.round(dollarPerMinLot * 100) / 100;
+        minCapitalRecommended = impliedLot > 0
+          ? Math.round(params.ra_capital * (minLot / impliedLot))
           : null;
       }
     }
@@ -865,11 +950,15 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
     const sizing = comp.lot_sizing_type || "fixed_lots";
     const cur = overrides[comp.symbol];
     let factor = scaleFactor;
-    if (sizing === "price_scaling_explicit" && cur && comp.defaultprice) {
+    if (sizing === "price_scaling_explicit" && cur && comp.defaultprice && !comp.self_adjusts_lot_by_price) {
       factor = scaleFactor * (comp.defaultprice / cur);
-    } else if (sizing === "price_scaling_implicit" && cur && comp.ref_price) {
+    } else if (sizing === "price_scaling_implicit" && cur && comp.ref_price && !comp.self_adjusts_lot_by_price) {
       factor = scaleFactor * (comp.ref_price / cur);
     }
+    // Se self_adjusts_lot_by_price è true, l'EA corregge già da solo SL/TP/
+    // lotti in base al prezzo corrente (parametro "adjustlotsizevariables"):
+    // applicare qui una correzione manuale duplicherebbe l'aggiustamento,
+    // producendo un lotto finale molto più piccolo del corretto.
     // Serie in % del capitale REALE (per applicare compound correttamente).
     // Logica: pnlDay = pctSeries × balance_corrente
     // Al giorno 0 (balance = ra_capital) deve dare lo stesso risultato dei lotti fissi:
@@ -1617,6 +1706,8 @@ function ChallengeSimulator({ firms }) {
         ref_lots:                 ea.ref_lots || ea.base_lots || 0.01,
         max_single_trade_loss_pct:  ea.max_single_trade_loss_pct || 0,
         p90_single_trade_loss_pct:    ea.p90_single_trade_loss_pct || 0,
+        loss_per_lot_dollar_p90:      ea.loss_per_lot_dollar_p90 || 0,
+        self_adjusts_lot_by_price:   ea.self_adjusts_lot_by_price || false,
         median_single_trade_loss_pct: ea.median_single_trade_loss_pct || 0,
         median_single_trade_loss_dollar: ea.median_single_trade_loss_dollar || 0,
         daily_pnl_dollar:             dailyDollar,
@@ -1649,6 +1740,8 @@ function ChallengeSimulator({ firms }) {
         ref_lots:                  ea.ref_lots || ea.base_lots || 0.01,
         max_single_trade_loss_pct:  ea.max_single_trade_loss_pct || 0,
         p90_single_trade_loss_pct:    ea.p90_single_trade_loss_pct || 0,
+        loss_per_lot_dollar_p90:      ea.loss_per_lot_dollar_p90 || 0,
+        self_adjusts_lot_by_price:   ea.self_adjusts_lot_by_price || false,
         median_single_trade_loss_pct: ea.median_single_trade_loss_pct || 0,
         median_single_trade_loss_dollar: ea.median_single_trade_loss_dollar || 0,
         daily_pnl_dollar:             dailyDollar,
@@ -2373,7 +2466,7 @@ function RealAccountSimulator() {
           defaultprice: ea.defaultprice || 0, mm_risked_money: ea.mm_risked_money || 0,
           ref_price: ea.ref_price || 0, ref_lots: ea.ref_lots || ea.base_lots || 0.01,
           max_single_trade_loss_pct: ea.max_single_trade_loss_pct || 0,
-          p90_single_trade_loss_pct: ea.p90_single_trade_loss_pct || 0,
+          p90_single_trade_loss_pct: ea.p90_single_trade_loss_pct || 0, loss_per_lot_dollar_p90: ea.loss_per_lot_dollar_p90 || 0, self_adjusts_lot_by_price: ea.self_adjusts_lot_by_price || false,
           daily_pnl_dollar: dailyDollar,
         }]
       };
@@ -2395,7 +2488,7 @@ function RealAccountSimulator() {
         defaultprice: ea.defaultprice || 0, mm_risked_money: ea.mm_risked_money || 0,
         ref_price: ea.ref_price || 0, ref_lots: ea.ref_lots || ea.base_lots || 0.01,
         max_single_trade_loss_pct: ea.max_single_trade_loss_pct || 0,
-        p90_single_trade_loss_pct: ea.p90_single_trade_loss_pct || 0,
+        p90_single_trade_loss_pct: ea.p90_single_trade_loss_pct || 0, loss_per_lot_dollar_p90: ea.loss_per_lot_dollar_p90 || 0, self_adjusts_lot_by_price: ea.self_adjusts_lot_by_price || false,
         daily_pnl_dollar: dailyDollar,
       });
       allSeries.push(dailyDollar);
