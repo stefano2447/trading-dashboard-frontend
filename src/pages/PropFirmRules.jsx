@@ -535,6 +535,11 @@ function computeLotRecommendations(dailyPnlDollar, eaComponents, capital, optima
       min_lot_step:                     minLotStepOut,
       dollar_risk_at_min_lot:           dollarRiskAtMinLot,
       min_capital_recommended:          minCapitalRecommended,
+      // Esposti SEMPRE (non solo quando sotto il minimo broker):
+      internal_estimated_lot:           (comp.self_adjusts_lot_by_price && internalLot !== paramValue) ? Math.round(internalLot * 1000000) / 1000000 : null,
+      dollar_risk_at_absolute_min_lot:  (sizing === "sqx_fixed_money" && comp.loss_per_lot_dollar_p90 > 0)
+                                          ? Math.round(minLot * comp.loss_per_lot_dollar_p90 * 100) / 100
+                                          : null,
     };
   });
 }
@@ -846,6 +851,7 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
 
     const minLot = params.min_lot_step || 0.01;
     let warning = null, dollarRiskAtMinLot = null, minCapitalRecommended = null;
+    let internalEstimatedLot = null, dollarRiskAtAbsoluteMinLot = null;
 
     if (sizing !== "sqx_fixed_money") {
       const cur = overrides[comp.symbol];
@@ -857,9 +863,13 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
       // prezzo corrente prima di aprire l'ordine — va controllato QUESTO
       // valore, non paramValue, altrimenti si perde il caso "paramValue è
       // sopra il minimo ma il lotto che l'EA aprirà davvero è sotto".
+      // Esposto sempre (non solo sotto il minimo broker) per trasparenza.
       const internalLot = (comp.self_adjusts_lot_by_price && cur && refP && paramValue)
         ? paramValue * (refP / cur)
         : paramValue;
+      if (comp.self_adjusts_lot_by_price && internalLot !== paramValue) {
+        internalEstimatedLot = Math.round(internalLot * 1000000) / 1000000;
+      }
 
       if (dollarPerMinLot != null && internalLot < minLot) {
         if (comp.self_adjusts_lot_by_price && internalLot !== paramValue) {
@@ -886,6 +896,7 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
       // osservato EMPIRICAMENTE sui trade reali del backtest (non una %
       // teorica) — è una proprietà dello SL/strumento, non scala col
       // capitale, quindi si applica direttamente senza scaleFactor.
+      dollarRiskAtAbsoluteMinLot = Math.round(minLot * comp.loss_per_lot_dollar_p90 * 100) / 100;
       const impliedLot = paramValue / comp.loss_per_lot_dollar_p90;
       if (impliedLot < minLot) {
         const dollarPerMinLot = minLot * comp.loss_per_lot_dollar_p90;
@@ -910,6 +921,8 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
       min_lot_step:            minLot,
       dollar_risk_at_min_lot:  dollarRiskAtMinLot,
       min_capital_recommended: minCapitalRecommended,
+      internal_estimated_lot:          internalEstimatedLot,
+      dollar_risk_at_absolute_min_lot: dollarRiskAtAbsoluteMinLot,
     };
   });
 
