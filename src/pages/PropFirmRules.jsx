@@ -113,7 +113,8 @@ function weightedIndex(n, cumWeights, rand) {
 
 // ─── Simulazione singola fase ─────────────────────────────────────────────────
 function simulatePhase(scaledArr, rand, capital, dailyDDLimit, totalDDLimit,
-                       profitTarget, timeLimit, minTradingDays, maxDDList, cumWeights) {
+                       profitTarget, timeLimit, minTradingDays, maxDDList, cumWeights, ddRatio) {
+  ddRatio = ddRatio || 1.0;
   let balance      = capital;
   let peakBalance  = capital;
   let day          = 0;
@@ -128,15 +129,19 @@ function simulatePhase(scaledArr, rand, capital, dailyDDLimit, totalDDLimit,
     if (dayPnl !== 0.0) {
       tradingDays++;
 
-      // Daily DD breach
-      if (dayPnl < 0 && Math.abs(dayPnl) > dailyDDLimit) {
+      // Daily DD breach — la perdita realizzata a fine giornata viene corretta
+      // col rapporto equity/balance, perché il vero minimo intraday (equity)
+      // è tipicamente più profondo di quanto il balance di chiusura suggerisca.
+      if (dayPnl < 0 && Math.abs(dayPnl) * ddRatio > dailyDDLimit) {
         return { outcome: "daily_breach", days: day };
       }
 
       balance += dayPnl;
       if (balance > peakBalance) peakBalance = balance;
 
-      const currentDD = peakBalance - balance;
+      // Il balance resta quello reale (per i target di profitto), ma il DD
+      // usato per il breach/report viene corretto verso l'equivalente equity.
+      const currentDD = (peakBalance - balance) * ddRatio;
       maxDDList.push(currentDD / capital * 100.0);
 
       if (currentDD > totalDDLimit) {
@@ -255,6 +260,7 @@ function runForRiskLevel(eaComponents, params, riskPct) {
 
   const dailyDDLimit = params.capital * params.daily_dd_pct  / 100.0;
   const totalDDLimit = params.capital * params.max_dd_pct    / 100.0;
+  const ddRatio       = params.equity_dd_ratio || 1.0;
   const target1      = params.capital * params.profit_target_p1 / 100.0;
   const target2      = params.profit_target_p2
                         ? params.capital * params.profit_target_p2 / 100.0
@@ -275,7 +281,7 @@ function runForRiskLevel(eaComponents, params, riskPct) {
   for (let i = 0; i < n; i++) {
     const r1 = simulatePhase(scaledArr, rand, params.capital,
                               dailyDDLimit, totalDDLimit,
-                              target1, timeLimit, minDays, maxDDReached, cumWeights);
+                              target1, timeLimit, minDays, maxDDReached, cumWeights, ddRatio);
 
     if (r1.outcome !== "success") {
       outcomes[r1.outcome]++;
@@ -288,7 +294,7 @@ function runForRiskLevel(eaComponents, params, riskPct) {
     } else {
       const r2 = simulatePhase(scaledArr, rand, params.capital,
                                 dailyDDLimit, totalDDLimit,
-                                target2, timeLimit, minDays, maxDDReached, cumWeights);
+                                target2, timeLimit, minDays, maxDDReached, cumWeights, ddRatio);
       if (r2.outcome === "success") {
         outcomes.success++;
         daysToSuccess.push(r1.days + r2.days);
@@ -522,6 +528,7 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
 
   const dailyDDLimit = params.capital * params.daily_dd_pct / 100.0;
   const totalDDLimit = params.capital * params.max_dd_pct   / 100.0;
+  const ddRatio       = params.equity_dd_ratio || 1.0;
 
   // Seed fisso anche qui per coerenza tra livelli di rischio
   const rand = mulberry32(67890);
@@ -552,13 +559,13 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
 
       if (dayPnl !== 0) {
         // Daily DD
-        if (dayPnl < 0 && Math.abs(dayPnl) > dailyDDLimit) {
+        if (dayPnl < 0 && Math.abs(dayPnl) * ddRatio > dailyDDLimit) {
           violated = true;
           break;
         }
         balance += dayPnl;
         if (balance > peakBalance) peakBalance = balance;
-        if (peakBalance - balance > totalDDLimit) {
+        if ((peakBalance - balance) * ddRatio > totalDDLimit) {
           violated = true;
           break;
         }
@@ -604,6 +611,7 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
 
   const riskDollar   = params.ra_capital * riskPct / 100.0;
   const scaleFactor  = maxDailyLoss > 0 ? riskDollar / maxDailyLoss : 1.0;
+  const ddRatio      = params.equity_dd_ratio || 1.0;
 
   // Per ogni EA: stesso scaleFactor, corretto solo per il prezzo attuale
   // dell'asset se l'EA scala col prezzo (price_scaling_*)
@@ -704,12 +712,12 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
           balance += pnlDay;
           if (balance < 0) balance = 0;
           if (balance > peakBalance) peakBalance = balance;
-          // DD dal picco (per P(DD>30%))
-          const ddPeak = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
+          // DD dal picco (per P(DD>30%)) — corretto verso l'equivalente equity
+          const ddPeak = peakBalance > 0 ? (peakBalance - balance) * ddRatio / peakBalance : 0;
           if (ddPeak > dd30Threshold) hitDD30 = true;
-          // Rovina = perdita del X% del CAPITALE INIZIALE (non dal picco)
-          // Es. 60% di $1000 = balance < $400, indipendentemente da picchi intermedi
-          const lossFromInitial = (params.ra_capital - balance) / params.ra_capital;
+          // Rovina = perdita del X% del CAPITALE INIZIALE (non dal picco),
+          // anch'essa corretta verso l'equivalente equity
+          const lossFromInitial = (params.ra_capital - balance) * ddRatio / params.ra_capital;
           if (lossFromInitial >= ruinThreshold) {
             ruined  = true;
             balance = params.ra_capital * (1 - ruinThreshold);
@@ -727,7 +735,7 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
     }
     if (ruined) nRuined++;
     if (hitDD30) nDD30++;
-    if (peakBalance > 0) maxDDList.push((peakBalance - balance) / peakBalance * 100);
+    if (peakBalance > 0) maxDDList.push((peakBalance - balance) * ddRatio / peakBalance * 100);
   }
 
   // Calcola statistiche per orizzonte
@@ -888,6 +896,7 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
   const dd30       = 0.30;
   const nSims      = params.n_simulations;
   const rand       = mulberry32(99999);  // seed diverso dal run fisso
+  const ddRatio    = params.equity_dd_ratio || 1.0;
 
   const horizonBalances = {};
   for (const h of horizons) horizonBalances[h.label] = [];
@@ -925,9 +934,9 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
           balance += pnlDay;
           if (balance < 0) balance = 0;
           if (balance > peakBalance) peakBalance = balance;
-          const ddPeak = peakBalance > 0 ? (peakBalance - balance) / peakBalance : 0;
+          const ddPeak = peakBalance > 0 ? (peakBalance - balance) * ddRatio / peakBalance : 0;
           if (ddPeak > dd30) hitDD30 = true;
-          const lossFromInitial = (params.ra_capital - balance) / params.ra_capital;
+          const lossFromInitial = (params.ra_capital - balance) * ddRatio / params.ra_capital;
           if (lossFromInitial >= ruinPct) {
             ruined  = true;
             balance = params.ra_capital * (1 - ruinPct);
@@ -1565,6 +1574,20 @@ function ChallengeSimulator({ firms }) {
     setMinDays(challenge.params.min_trading_days || 0);
   }
 
+  function getEquityDdRatio() {
+    // Rapporto equity_dd/balance_dd da applicare alla correzione del Monte
+    // Carlo — per singolo EA lo prende direttamente, per portafoglio usa
+    // l'aggregato già calcolato server-side in analyzer.py (media pesata
+    // sul balance_dd di ciascun EA).
+    const eaPool = btData?.ea_pool || {};
+    if (selType === "ea") {
+      return eaPool[selId]?.equity_balance_dd_ratio || 1.0;
+    }
+    const collection = btData?.portfolio_collections?.[selColl] || [];
+    const portfolio  = collection[parseInt(selId)];
+    return portfolio?.equity_balance_dd_ratio || 1.0;
+  }
+
   function buildDailyPnlDollar() {
     // Costruisce daily_pnl in $ assoluti e ea_components dal btData
     // direttamente nel browser — nessuna chiamata al server
@@ -1672,6 +1695,7 @@ function ChallengeSimulator({ firms }) {
         max_risk_per_trade_pct: maxRiskPerTrade,
         asset_price_overrides:  assetPrices,
         min_lot_step:           0.01,
+        equity_dd_ratio:        getEquityDdRatio(),
       }
     });
   }
@@ -1737,6 +1761,7 @@ function ChallengeSimulator({ firms }) {
         funded_risk_ratio:    fundedRiskRatio / 100,
         payout_wait_factor:   0.075,
         optimal_criterion:    optimalCriterion,
+        equity_dd_ratio:      getEquityDdRatio(),
       },
     });
   }
@@ -2316,6 +2341,16 @@ function RealAccountSimulator() {
       .finally(() => setLoading(false));
   }, []);
 
+  function getEquityDdRatio() {
+    const eaPool = btData?.ea_pool || {};
+    if (selType === "ea") {
+      return eaPool[selId]?.equity_balance_dd_ratio || 1.0;
+    }
+    const collection = btData?.portfolio_collections?.[selColl] || [];
+    const portfolio  = collection[parseInt(selId)];
+    return portfolio?.equity_balance_dd_ratio || 1.0;
+  }
+
   function buildDailyPnlDollar() {
     const eaPool = btData?.ea_pool || {};
     if (selType === "ea") {
@@ -2397,6 +2432,7 @@ function RealAccountSimulator() {
         max_risk_per_trade_pct: maxRiskPerTrade,
         asset_price_overrides:  assetPrices,
         min_lot_step:           0.01,
+        equity_dd_ratio:        getEquityDdRatio(),
       }
     });
   }
@@ -2437,6 +2473,7 @@ function RealAccountSimulator() {
         max_risk_per_trade_pct: maxRiskPerTrade,
         asset_price_overrides:  assetPrices,
         min_lot_step:           0.01,
+        equity_dd_ratio:        getEquityDdRatio(),
       }
     });
   }

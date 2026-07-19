@@ -198,6 +198,9 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
               {th("RF",       "portfolio_recovery_factor")}
               {th("UI%",      "portfolio_ulcer_index")}
               {th("CAGR%",    "portfolio_cagr_pct")}
+              {th("SETT-",    "pct_losing_weeks")}
+              {th("MESI-",    "pct_losing_months")}
+              {th("TRADE/SETT", "avg_trades_per_week")}
               {th("SCORE",    "composite_score")}
               {th("DR",       "_hrp_dr")}
               {th("ENB%",     "_hrp_enb")}
@@ -317,6 +320,37 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                     <span title="CAGR del portafoglio combinato (equity curve aggregata degli EA)"
                           style={{ cursor: "help" }}>
                       {p.portfolio_cagr_pct != null ? fmt(p.portfolio_cagr_pct, 1) + "%" : "—"}
+                    </span>
+                  </td>
+
+                  {/* % settimane in perdita */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)",
+                               color: (p.pct_losing_weeks ?? 0) <= 25 ? "var(--accent)" :
+                                      (p.pct_losing_weeks ?? 0) <= 40 ? "var(--text-secondary)" : "var(--warning)" }}>
+                    <span title="% di settimane con rendimento di portafoglio negativo sul totale (curve balance combinate equal-weight)"
+                          style={{ cursor: "help" }}>
+                      {p.pct_losing_weeks != null ? fmt(p.pct_losing_weeks, 1) + "%" : "—"}
+                    </span>
+                  </td>
+
+                  {/* % mesi in perdita */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)",
+                               color: (p.pct_losing_months ?? 0) <= 20 ? "var(--accent)" :
+                                      (p.pct_losing_months ?? 0) <= 35 ? "var(--text-secondary)" : "var(--warning)" }}>
+                    <span title="% di mesi con rendimento di portafoglio negativo sul totale (curve balance combinate equal-weight)"
+                          style={{ cursor: "help" }}>
+                      {p.pct_losing_months != null ? fmt(p.pct_losing_months, 1) + "%" : "—"}
+                    </span>
+                  </td>
+
+                  {/* Trade medi a settimana */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>
+                    <span title={"Trade totali: " + (p.total_trades ?? "—") + " · media a settimana sul periodo combinato"}
+                          style={{ cursor: "help" }}>
+                      {p.avg_trades_per_week != null ? fmt(p.avg_trades_per_week, 1) : "—"}
                     </span>
                   </td>
 
@@ -447,6 +481,26 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
                   style={{ cursor: "help" }}>
               <Badge value={"CAGR " + fmt(portfolio.portfolio_cagr_pct, 1) + "%"}
                      type={portfolio.portfolio_cagr_pct >= 20 ? "positive" : "neutral"} />
+            </span>
+          )}
+          {portfolio.pct_losing_weeks != null && (
+            <span title={"% di settimane con rendimento di portafoglio negativo sul totale (curve balance combinate equal-weight)"}
+                  style={{ cursor: "help" }}>
+              <Badge value={"Sett- " + fmt(portfolio.pct_losing_weeks, 1) + "%"}
+                     type={portfolio.pct_losing_weeks <= 25 ? "positive" : portfolio.pct_losing_weeks <= 40 ? "neutral" : "negative"} />
+            </span>
+          )}
+          {portfolio.pct_losing_months != null && (
+            <span title={"% di mesi con rendimento di portafoglio negativo sul totale (curve balance combinate equal-weight)"}
+                  style={{ cursor: "help" }}>
+              <Badge value={"Mesi- " + fmt(portfolio.pct_losing_months, 1) + "%"}
+                     type={portfolio.pct_losing_months <= 20 ? "positive" : portfolio.pct_losing_months <= 35 ? "neutral" : "negative"} />
+            </span>
+          )}
+          {portfolio.avg_trades_per_week != null && (
+            <span title={"Trade totali: " + (portfolio.total_trades ?? "—") + " · media a settimana sul periodo combinato"}
+                  style={{ cursor: "help" }}>
+              <Badge value={fmt(portfolio.avg_trades_per_week, 1) + " trade/sett"} type="neutral" />
             </span>
           )}
         </div>
