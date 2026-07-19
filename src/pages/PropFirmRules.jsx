@@ -2329,8 +2329,9 @@ function ChallengeSimulator({ firms }) {
                         </tr>
                       </thead>
                       <tbody>
-                        {results.lot_recommendations.map(rec => (
-                          <tr key={rec.ea_name} style={{ borderBottom: "1px solid var(--border)" }}>
+                        {results.lot_recommendations.flatMap(rec => {
+                          const mainRow = (
+                          <tr key={rec.ea_name} style={{ borderBottom: (rec.warning || rec.internal_estimated_lot != null || rec.dollar_risk_at_absolute_min_lot != null) ? "none" : "1px solid var(--border)" }}>
                             <td style={{ padding: "0.35rem 0.5rem", color: "var(--text-primary)", fontWeight: 500 }}>
                               {rec.ea_name}
                             </td>
@@ -2382,7 +2383,40 @@ function ChallengeSimulator({ firms }) {
                                 : "—"}
                             </td>
                           </tr>
-                        ))}
+                          );
+
+                          const extraRows = [];
+                          if (rec.warning) {
+                            extraRows.push(
+                              <tr key={rec.ea_name + "_warn"} style={{ borderBottom: "1px solid var(--border)" }}>
+                                <td colSpan={6} style={{ padding: "0 0.5rem 0.5rem", fontSize: 11, color: "var(--warning)" }}>
+                                  ⚠ {rec.warning}
+                                  {rec.min_capital_recommended && (
+                                    <> Capitale minimo consigliato per questo rischio: ~${rec.min_capital_recommended.toLocaleString()}.</>
+                                  )}
+                                </td>
+                              </tr>
+                            );
+                          } else if (rec.internal_estimated_lot != null) {
+                            extraRows.push(
+                              <tr key={rec.ea_name + "_info"} style={{ borderBottom: "1px solid var(--border)" }}>
+                                <td colSpan={6} style={{ padding: "0 0.5rem 0.5rem", fontSize: 11, color: "var(--text-muted)" }}>
+                                  ℹ Lotto effettivo stimato che l'EA aprirà al prezzo corrente: ≈{rec.internal_estimated_lot}
+                                </td>
+                              </tr>
+                            );
+                          }
+                          if (rec.dollar_risk_at_absolute_min_lot != null) {
+                            extraRows.push(
+                              <tr key={rec.ea_name + "_minrisk"} style={{ borderBottom: "1px solid var(--border)" }}>
+                                <td colSpan={6} style={{ padding: "0 0.5rem 0.5rem", fontSize: 11, color: "var(--text-muted)" }}>
+                                  ℹ Al lotto minimo assoluto (0.01) questo EA rischia storicamente ≈${rec.dollar_risk_at_absolute_min_lot} per trade.
+                                </td>
+                              </tr>
+                            );
+                          }
+                          return [mainRow, ...extraRows];
+                        })}
                       </tbody>
                     </table>
                     <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: "0.5rem" }}>
@@ -2948,7 +2982,7 @@ function RealAccountSimulator() {
                       <tbody>
                         {results.lot_recommendations.flatMap(rec => {
                           const rows = [
-                            <tr key={rec.ea_name} style={{ borderBottom: rec.warning ? "none" : "1px solid var(--border)" }}>
+                            <tr key={rec.ea_name} style={{ borderBottom: (rec.warning || rec.internal_estimated_lot != null || rec.dollar_risk_at_absolute_min_lot != null) ? "none" : "1px solid var(--border)" }}>
                               <td style={{ padding:"0.35rem 0.5rem",color:"var(--text-primary)",fontWeight:500 }}>{rec.ea_name}</td>
                               <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",color:"var(--text-muted)",fontSize:11 }}>{rec.param_name}</td>
                               <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
@@ -2967,11 +3001,29 @@ function RealAccountSimulator() {
                             rows.push(
                               <tr key={rec.ea_name + "_warn"} style={{ borderBottom: "1px solid var(--border)" }}>
                                 <td colSpan={4} style={{ padding: "0 0.5rem 0.5rem", fontSize: 11, color: "var(--warning)" }}>
-                                  ⚠ Lotto sotto il minimo broker ({rec.min_lot_step}): al lotto minimo rischi
-                                  ≈ ${rec.dollar_risk_at_min_lot} per trade invece di quanto impostato.
+                                  ⚠ {rec.warning}
                                   {rec.min_capital_recommended && (
                                     <> Capitale minimo consigliato per questo rischio: ~${rec.min_capital_recommended.toLocaleString()}.</>
                                   )}
+                                </td>
+                              </tr>
+                            );
+                          } else if (rec.internal_estimated_lot != null) {
+                            // EA self-adjusting, tutto nella norma (nessun warning): mostra comunque
+                            // il lotto che l'EA aprirà davvero al prezzo corrente, per trasparenza.
+                            rows.push(
+                              <tr key={rec.ea_name + "_info"} style={{ borderBottom: "1px solid var(--border)" }}>
+                                <td colSpan={4} style={{ padding: "0 0.5rem 0.5rem", fontSize: 11, color: "var(--text-muted)" }}>
+                                  ℹ Lotto effettivo stimato che l'EA aprirà al prezzo corrente: ≈{rec.internal_estimated_lot}
+                                </td>
+                              </tr>
+                            );
+                          }
+                          if (rec.dollar_risk_at_absolute_min_lot != null) {
+                            rows.push(
+                              <tr key={rec.ea_name + "_minrisk"} style={{ borderBottom: "1px solid var(--border)" }}>
+                                <td colSpan={4} style={{ padding: "0 0.5rem 0.5rem", fontSize: 11, color: "var(--text-muted)" }}>
+                                  ℹ Al lotto minimo assoluto (0.01) questo EA rischia storicamente ≈${rec.dollar_risk_at_absolute_min_lot} per trade.
                                 </td>
                               </tr>
                             );
