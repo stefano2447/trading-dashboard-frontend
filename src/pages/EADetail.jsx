@@ -333,14 +333,35 @@ export function EADetail() {
     const retDD   = maxDD > 0 ? total / maxDD : null;
     const maxCL   = calcMaxConsecLoss(trades);
 
+    // Segnale: giorni dall'ultimo trade vs intervallo medio storico tra i trade
+    const firstTrade = trades[0]?.open_time;
+    const lastTrade  = trades[trades.length - 1]?.close_time;
+    let signalGap = { status: "insufficient", daysSince: null, expectedDays: null };
+    if (firstTrade && lastTrade && trades.length >= 5) {
+      const now = new Date();
+      const activeDays = Math.max(1, (now - new Date(firstTrade)) / (24 * 3600 * 1000));
+      const tradesPerDay = trades.length / activeDays;
+      const daysSince = (now - new Date(lastTrade)) / (24 * 3600 * 1000);
+      if (tradesPerDay > 0) {
+        const expectedDays = 1 / tradesPerDay;
+        const isSparse = expectedDays > 20;
+        const warnThreshold     = Math.max(isSparse ? 25 : 14, expectedDays * (isSparse ? 3 : 2));
+        const criticalThreshold = Math.max(isSparse ? 45 : 30, expectedDays * (isSparse ? 6 : 4));
+        let status = "ok";
+        if (daysSince > criticalThreshold) status = "critical";
+        else if (daysSince > warnThreshold) status = "warning";
+        signalGap = { status, daysSince, expectedDays };
+      }
+    }
+
     return {
       total, totalRaw, pf, winRate,
       wins: wins.length, losses: losses.length,
       avgWin, avgLoss, avgRR, expectancy,
       maxDD, retDD, maxCL,
       months, avgLots,
-      firstTrade: trades[0]?.open_time,
-      lastTrade:  trades[trades.length - 1]?.close_time,
+      firstTrade, lastTrade,
+      signalGap,
     };
   }, [trades]);
 
@@ -555,6 +576,21 @@ export function EADetail() {
                 <MetricRow label="Max consec. loss"   value={metrics.maxCL}                    color={metrics.maxCL >= 8 ? "var(--danger)" : "var(--text-primary)"} />
                 <MetricRow label="Primo trade"        value={fmtDate(metrics.firstTrade)} />
                 <MetricRow label="Ultimo trade"       value={fmtDate(metrics.lastTrade)} />
+                <MetricRow
+                  label="Segnale"
+                  value={
+                    metrics.signalGap.status === "insufficient" ? "⚪ dati insuff."
+                    : metrics.signalGap.status === "critical"   ? `🔴 silenzio da ${Math.round(metrics.signalGap.daysSince)}gg`
+                    : metrics.signalGap.status === "warning"    ? `🟡 fermo da ${Math.round(metrics.signalGap.daysSince)}gg`
+                    : "🟢 regolare"
+                  }
+                  color={
+                    metrics.signalGap.status === "critical" ? "var(--danger)"
+                    : metrics.signalGap.status === "warning" ? "var(--warning)"
+                    : metrics.signalGap.status === "ok" ? "var(--accent)"
+                    : "var(--text-muted)"
+                  }
+                />
                 <MetricRow label="Mesi attivo"        value={metrics.months} />
                 <MetricRow label="Lotti medi"         value={fmt(metrics.avgLots)} />
               </div>

@@ -31,6 +31,46 @@ function fmt(val, dec = 2) {
   return Number(val).toFixed(dec);
 }
 
+// Calcola se un EA non riceve segnali (trade) da troppo tempo rispetto alla sua
+// media storica. Non è un "è sicuramente rotto", ma un "vale la pena controllare".
+function calcSignalGap(ea) {
+  const totalTrades = ea.total_trades || 0;
+  const firstDate = ea.first_trade_date ? new Date(ea.first_trade_date) : null;
+  // Il campo con la data dell'ultimo trade: adattare qui se il backend usa un altro nome
+  // (es. ea.last_close_time) — al momento nei dati aggregati non ho visto questo campo.
+  const lastDate = ea.last_trade_date ? new Date(ea.last_trade_date) : null;
+
+  if (!firstDate || !lastDate || totalTrades < 5) {
+    return { status: "insufficient", daysSince: null, expectedDays: null };
+  }
+
+  const now = new Date();
+  const activeDays = Math.max(1, (now - firstDate) / (24 * 3600 * 1000));
+  const tradesPerDay = totalTrades / activeDays;
+  const daysSince = (now - lastDate) / (24 * 3600 * 1000);
+
+  if (tradesPerDay <= 0) {
+    return { status: "insufficient", daysSince, expectedDays: null };
+  }
+
+  const expectedDays = 1 / tradesPerDay; // intervallo medio storico tra due trade
+  // Soglie più permissive per EA storicamente molto radi, per evitare falsi allarmi
+  const isSparse = expectedDays > 20; // meno di ~1 trade/mese
+  const warnMultiplier = isSparse ? 3 : 2;
+  const criticalMultiplier = isSparse ? 6 : 4;
+  const warnFloor = isSparse ? 25 : 14;
+  const criticalFloor = isSparse ? 45 : 30;
+
+  const warnThreshold = Math.max(warnFloor, expectedDays * warnMultiplier);
+  const criticalThreshold = Math.max(criticalFloor, expectedDays * criticalMultiplier);
+
+  let status = "ok";
+  if (daysSince > criticalThreshold) status = "critical";
+  else if (daysSince > warnThreshold) status = "warning";
+
+  return { status, daysSince, expectedDays };
+}
+
 function isExpiringSoon(dateStr) {
   if (!dateStr) return false;
   const parts = dateStr.split("/");
@@ -72,6 +112,7 @@ const COLUMN_GROUPS = [
   { label: "ATTIVITÀ", columns: [
     { key: "total_trades",          label: "Trade",         numeric: true  },
     { key: "_months",               label: "Mesi",          numeric: true  },
+    { key: "_signal",               label: "Segnale",       numeric: false },
   ]},
   { label: "PERFORMANCE", columns: [
     { key: "win_rate_pct",          label: "Win%",          numeric: true  },
@@ -163,6 +204,7 @@ export function EAOverview() {
       _ret_dd: calcRetDd(ea.total_net_profit_norm ?? ea.total_net_profit, ea.max_dd),
       _retdd: calcRetDd(ea.total_net_profit_norm ?? ea.total_net_profit, ea.max_dd),
       _asset:  normalizeAsset(ea.symbol),
+      _signalGap: calcSignalGap(ea),
     };
   }), [eas]);
 
@@ -195,6 +237,8 @@ export function EAOverview() {
   const avgRetDd = activeEAs.filter(ea => ea._retdd !== null).reduce((s, ea) => s + ea._retdd, 0) / (activeEAs.filter(ea => ea._retdd !== null).length || 1);
   const totalNorm = activeEAs.reduce((s, ea) => s + (ea.total_net_profit_norm ?? ea.total_net_profit ?? 0), 0);
   const bestEA    = [...activeEAs].sort((a, b) => (b._retdd ?? -999) - (a._retdd ?? -999))[0];
+  const signalIssues = activeEAs.filter(ea => ea._signalGap?.status === "warning" || ea._signalGap?.status === "critical");
+  const signalCritical = signalIssues.filter(ea => ea._signalGap?.status === "critical").length;
 
   // ─── Render cella ─────────────────────────────────────────────────────────
   function renderCell(ea, col) {
@@ -225,6 +269,22 @@ export function EAOverview() {
         );
       case "_months":
         return <span style={{ fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>{ea._months < 1 ? "<1" : ea._months}</span>;
+      case "_signal": {
+        const g = ea._signalGap;
+        if (!g || g.status === "insufficient") {
+          return <span style={{ fontSize: 11, color: "var(--text-muted)", fontStyle: "italic" }}>⚪ —</span>;
+        }
+        const emoji = g.status === "critical" ? "🔴" : g.status === "warning" ? "🟡" : "🟢";
+        const label = g.status === "critical" ? "Silenzio" : g.status === "warning" ? "Rallentato" : "OK";
+        const color = g.status === "critical" ? "var(--danger)" : g.status === "warning" ? "var(--warning)" : "var(--accent)";
+        const tooltip = `Ultimo trade: ${Math.round(g.daysSince)}gg fa · intervallo medio storico: ${g.expectedDays.toFixed(1)}gg`;
+        return (
+          <div title={tooltip} style={{ display: "flex", alignItems: "center", gap: 5, cursor: "help" }}>
+            <span style={{ fontSize: 12 }}>{emoji}</span>
+            <span style={{ fontSize: 11, color, fontWeight: 500 }}>{label}</span>
+          </div>
+        );
+      }
       case "win_rate_pct":
         return <Badge value={`${Number(ea.win_rate_pct).toFixed(1)}%`} type={wrType(ea.win_rate_pct)} />;
       case "profit_factor":
@@ -536,6 +596,7 @@ export function EAOverview() {
         <SummaryCard label="PF MEDIO"                value={avgPF.toFixed(2)}      sub="su strategie attive"           valueColor={avgPF >= 1.5 ? "var(--accent)" : avgPF >= 1 ? "var(--warning)" : "var(--danger)"} />
         <SummaryCard label="RET/DD MEDIO"            value={avgRetDd.toFixed(2)}   sub="rendimento tot. / max DD"      valueColor={avgRetDd >= 2 ? "var(--accent)" : avgRetDd >= 1 ? "var(--warning)" : "var(--danger)"} />
         <SummaryCard label="MIGLIORE EA"             value={bestEA?.ea_name ?? "—"} sub={bestEA ? `Ret/DD: ${bestEA._retdd?.toFixed(2)}` : ""} valueColor="var(--accent)" />
+        <SummaryCard label="SEGNALI DA CONTROLLARE"  value={signalIssues.length}   sub={signalCritical ? `${signalCritical} in silenzio prolungato` : "nessun silenzio prolungato"} valueColor={signalCritical ? "var(--danger)" : signalIssues.length ? "var(--warning)" : "var(--accent)"} />
       </div>
 
       {/* Filtro asset */}
