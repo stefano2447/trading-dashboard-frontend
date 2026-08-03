@@ -89,6 +89,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
   const [filterMinRecency, setFilterMinRecency] = useState("");
   const [filterMinUpi,     setFilterMinUpi]     = useState("");
   const [filterMinRf,      setFilterMinRf]      = useState("");
+  const [filterMinStability, setFilterMinStability] = useState("");
   const [filterSignal,     setFilterSignal]     = useState("");
 
   function toggleSort(key) {
@@ -103,6 +104,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
     .filter(p => !filterMinRecency || (p.portfolio_recency ?? 0) >= parseFloat(filterMinRecency))
     .filter(p => !filterMinUpi     || (p.portfolio_upi ?? 0)      >= parseFloat(filterMinUpi))
     .filter(p => !filterMinRf      || (p.portfolio_recovery_factor ?? 0) >= parseFloat(filterMinRf))
+    .filter(p => !filterMinStability || (p.is_oos_stability_score ?? 0) >= parseFloat(filterMinStability))
     .filter(p => !filterSignal     || (
       [p._hrp?.dr_signal, p._hrp?.enb_signal, p._hrp?.corr_signal]
         .filter(s => s && s !== 'N/A')
@@ -145,6 +147,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
           { label: "Recency min",  val: filterMinRecency, set: setFilterMinRecency, ph: "es. 0.8" },
           { label: "UPI min",       val: filterMinUpi,     set: setFilterMinUpi,     ph: "es. 1.5" },
           { label: "RF min",        val: filterMinRf,      set: setFilterMinRf,      ph: "es. 3"   },
+          { label: "Stability min", val: filterMinStability, set: setFilterMinStability, ph: "es. 0.6" },
         ].map(({ label, val, set, ph }) => (
           <div key={label} style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
             <span style={{ fontSize: 12, color: "var(--text-muted)", whiteSpace: "nowrap" }}>{label}</span>
@@ -196,6 +199,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
               {th("RECENCY",  "portfolio_recency")}
               {th("UPI",      "portfolio_upi")}
               {th("RF",       "portfolio_recovery_factor")}
+              {th("STAB",     "is_oos_stability_score")}
               {th("UI%",      "portfolio_ulcer_index")}
               {th("CAGR%",    "portfolio_cagr_pct")}
               {th("SETT-",    "pct_losing_weeks")}
@@ -298,6 +302,22 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                     <span title="Recovery Factor = Profitto totale / MaxDD. ≥5 ottimo, ≥2 accettabile"
                           style={{ cursor: "help" }}>
                       {p.portfolio_recovery_factor != null ? fmt(p.portfolio_recovery_factor, 2) : "—"}
+                    </span>
+                  </td>
+
+                  {/* IS/OOS Stability Score — QuantAnalyzer nativo */}
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right",
+                               fontFamily: "var(--font-data)",
+                               color: p.is_oos_stability_score == null ? "var(--text-muted)" :
+                                      p.is_oos_stability_score >= 0.8 ? "var(--accent)" :
+                                      p.is_oos_stability_score >= 0.5 ? "var(--text-secondary)" : "var(--danger)" }}>
+                    <span title={p.is_oos_stability_score != null
+                        ? "IS→OOS Stability = " + fmt(p.is_oos_stability_score, 2) +
+                          " — degrado peggiore: " + fmt(p.is_oos_worst_degradation_pct, 1) + "%" +
+                          " (Calmar/MaxDD/Sharpe/PF/NetProfit, dati IS/OOS nativi QuantAnalyzer)"
+                        : "Nessuna colonna IS/OOS nel CSV esportato da QuantAnalyzer"}
+                          style={{ cursor: "help" }}>
+                      {p.is_oos_stability_score != null ? fmt(p.is_oos_stability_score, 2) : "—"}
                     </span>
                   </td>
 
@@ -474,6 +494,21 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
                   style={{ cursor: "help" }}>
               <Badge value={"RF " + fmt(portfolio.portfolio_recovery_factor, 2)}
                      type={portfolio.portfolio_recovery_factor >= 5 ? "positive" : portfolio.portfolio_recovery_factor >= 2 ? "neutral" : "negative"} />
+            </span>
+          )}
+          {portfolio.is_oos_stability_score != null && (
+            <span title={"Stability = " + fmt(portfolio.is_oos_stability_score, 2) +
+                         " — degrado peggiore IS→OOS: " + fmt(portfolio.is_oos_worst_degradation_pct, 1) + "%" +
+                         (portfolio.is_oos_metric_degradation
+                           ? " (Calmar " + fmt(portfolio.is_oos_metric_degradation.calmar, 1) + "%, " +
+                             "MaxDD " + fmt(portfolio.is_oos_metric_degradation.max_dd, 1) + "%, " +
+                             "Sharpe " + fmt(portfolio.is_oos_metric_degradation.sharpe, 1) + "%, " +
+                             "PF " + fmt(portfolio.is_oos_metric_degradation.profit_factor, 1) + "%, " +
+                             "NetProfit " + fmt(portfolio.is_oos_metric_degradation.net_profit, 1) + "%)"
+                           : "")}
+                  style={{ cursor: "help" }}>
+              <Badge value={"Stability " + fmt(portfolio.is_oos_stability_score, 2)}
+                     type={portfolio.is_oos_stability_score >= 0.8 ? "positive" : portfolio.is_oos_stability_score >= 0.5 ? "neutral" : "negative"} />
             </span>
           )}
           {portfolio.portfolio_cagr_pct != null && (
