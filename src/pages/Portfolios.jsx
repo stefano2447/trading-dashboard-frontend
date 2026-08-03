@@ -503,8 +503,7 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
                            ? " (Calmar " + fmt(portfolio.is_oos_metric_degradation.calmar, 1) + "%, " +
                              "MaxDD " + fmt(portfolio.is_oos_metric_degradation.max_dd, 1) + "%, " +
                              "Sharpe " + fmt(portfolio.is_oos_metric_degradation.sharpe, 1) + "%, " +
-                             "PF " + fmt(portfolio.is_oos_metric_degradation.profit_factor, 1) + "%, " +
-                             "NetProfit " + fmt(portfolio.is_oos_metric_degradation.net_profit, 1) + "%)"
+                             "PF " + fmt(portfolio.is_oos_metric_degradation.profit_factor, 1) + "%)"
                            : "")}
                   style={{ cursor: "help" }}>
               <Badge value={"Stability " + fmt(portfolio.is_oos_stability_score, 2)}
