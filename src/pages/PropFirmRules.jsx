@@ -3147,46 +3147,15 @@ function RealAccountSimulator() {
 
 
 const TABS = [
-  { id: "regole",    label: "Regole Prop Firm" },
-  { id: "simulator", label: "Challenge Simulator" },
-  { id: "real",      label: "Simulatore Conto Reale" },
+  { id: "simulator", label: "Simulazione Prop Firm" },
+  { id: "real",      label: "Simulazione Conti Reali" },
 ];
 
 export function PropFirmRules() {
-  const [activeTab,          setActiveTab]          = useState("regole");
-  const [firms,              setFirms]              = useState(loadFirms);
-  const [selectedFirm,       setSelectedFirm]       = useState(null);
-  const [showAddFirm,        setShowAddFirm]        = useState(false);
-  const [showAddChallenge,   setShowAddChallenge]   = useState(false);
+  const [activeTab, setActiveTab] = useState("simulator");
+  const [firms,     setFirms]     = useState(loadFirms);
 
   useEffect(() => { saveFirms(firms); }, [firms]);
-  useEffect(() => {
-    if (!selectedFirm && firms.length > 0) setSelectedFirm(firms[0].id);
-  }, []);
-
-  function addFirm(firm) { setFirms(p => [...p, firm]); setSelectedFirm(firm.id); }
-  function deleteFirm(id) {
-    const rem = firms.filter(f => f.id !== id);
-    setFirms(rem); setSelectedFirm(rem[0]?.id || null);
-  }
-  function addChallenge(ch) {
-    setFirms(p => p.map(f => f.id === selectedFirm ? { ...f, challenges: [...f.challenges, ch] } : f));
-  }
-  function deleteChallenge(firmId, chId) {
-    setFirms(p => p.map(f => f.id === firmId
-      ? { ...f, challenges: f.challenges.filter(c => c.id !== chId) } : f));
-  }
-  function updateChallenge(firmId, updated) {
-    setFirms(p => p.map(f => f.id === firmId
-      ? { ...f, challenges: f.challenges.map(c => c.id === updated.id ? updated : c) } : f));
-  }
-  function resetToDefault() {
-    if (confirm("Ripristinare i dati predefiniti?")) {
-      setFirms(DEFAULT_FIRMS); setSelectedFirm(DEFAULT_FIRMS[0].id);
-    }
-  }
-
-  const activeFirm = firms.find(f => f.id === selectedFirm);
 
   return (
     <div>
@@ -3194,28 +3163,11 @@ export function PropFirmRules() {
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start",
                     marginBottom: "1.5rem", flexWrap: "wrap", gap: "0.75rem" }}>
         <div>
-          <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 4 }}>Prop Firm</h1>
+          <h1 style={{ fontSize: 22, fontWeight: 600, marginBottom: 4 }}>Simulazione Portafogli</h1>
           <p style={{ color: "var(--text-muted)", fontSize: 13 }}>
-            Regole, limiti e simulazione challenge · {firms.length} prop firms
+            Simulazione challenge prop firm e conti reali
           </p>
         </div>
-        {activeTab === "regole" && (
-          <div style={{ display: "flex", gap: "0.5rem" }}>
-            <button onClick={resetToDefault}
-              style={{ padding: "0.4rem 0.9rem", fontSize: 12, borderRadius: "var(--radius-sm)",
-                       border: "1px solid var(--border)", background: "var(--bg-elevated)",
-                       color: "var(--text-muted)", cursor: "pointer" }}>
-              Reset default
-            </button>
-            <button onClick={() => setShowAddFirm(true)}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "0.4rem 0.9rem",
-                       fontSize: 13, borderRadius: "var(--radius-sm)",
-                       border: "1px solid var(--accent)", background: "var(--accent-dim)",
-                       color: "var(--accent)", cursor: "pointer" }}>
-              <Plus size={14} /> Aggiungi Prop Firm
-            </button>
-          </div>
-        )}
       </div>
 
       {/* Tabs */}
@@ -3233,85 +3185,12 @@ export function PropFirmRules() {
         ))}
       </div>
 
-      {/* ── Tab Regole ───────────────────────────────────────── */}
-      {activeTab === "regole" && (
-        <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: "1rem" }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-            {firms.map(firm => (
-              <div key={firm.id} onClick={() => setSelectedFirm(firm.id)}
-                style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
-                         padding: "0.75rem 0.9rem", borderRadius: "var(--radius-md)", cursor: "pointer",
-                         background: selectedFirm === firm.id ? "var(--accent-dim)" : "var(--bg-surface)",
-                         border: `1px solid ${selectedFirm === firm.id ? "var(--accent)" : "var(--border)"}` }}>
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: selectedFirm === firm.id ? 600 : 400,
-                                color: selectedFirm === firm.id ? "var(--accent)" : "var(--text-primary)" }}>
-                    {firm.name}
-                  </div>
-                  <div style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 2 }}>
-                    {firm.challenges.length} challenge{firm.challenges.length !== 1 ? "s" : ""}
-                  </div>
-                </div>
-                <button onClick={e => { e.stopPropagation(); deleteFirm(firm.id); }}
-                  style={{ background: "none", border: "none", color: "var(--text-muted)",
-                           cursor: "pointer", padding: 4, opacity: 0.5 }}>
-                  <Trash2 size={12} />
-                </button>
-              </div>
-            ))}
-          </div>
-
-          <div>
-            {!activeFirm ? (
-              <div style={{ textAlign: "center", padding: "3rem", border: "1px dashed var(--border)",
-                            borderRadius: "var(--radius-lg)", color: "var(--text-muted)" }}>
-                Seleziona una prop firm o aggiungine una nuova
-              </div>
-            ) : (
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between",
-                              alignItems: "center", marginBottom: "1.25rem" }}>
-                  <div>
-                    <h2 style={{ fontSize: 20, fontWeight: 700, marginBottom: 2 }}>{activeFirm.name}</h2>
-                    {activeFirm.website && (
-                      <a href={activeFirm.website} target="_blank" rel="noopener noreferrer"
-                        style={{ fontSize: 12, color: "var(--accent)", textDecoration: "none" }}>
-                        {activeFirm.website} ↗
-                      </a>
-                    )}
-                  </div>
-                  <button onClick={() => setShowAddChallenge(true)}
-                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "0.4rem 0.9rem",
-                             fontSize: 13, borderRadius: "var(--radius-sm)",
-                             border: "1px solid var(--border)", background: "var(--bg-elevated)",
-                             color: "var(--text-secondary)", cursor: "pointer" }}>
-                    <Plus size={14} /> Aggiungi Challenge
-                  </button>
-                </div>
-                {activeFirm.challenges.length === 0 ? (
-                  <div style={{ textAlign: "center", padding: "2rem", border: "1px dashed var(--border)",
-                                borderRadius: "var(--radius-lg)", color: "var(--text-muted)", fontSize: 13 }}>
-                    Nessuna challenge — clicca "Aggiungi Challenge"
-                  </div>
-                ) : (
-                  activeFirm.challenges.map(ch => (
-                    <ChallengeCard key={ch.id} challenge={ch}
-                      onDelete={id => deleteChallenge(activeFirm.id, id)}
-                      onUpdate={updated => updateChallenge(activeFirm.id, updated)} />
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ── Tab Challenge Simulator ──────────────────────────── */}
+      {/* ── Tab Simulazione Prop Firm ────────────────────────── */}
       {activeTab === "simulator" && (
         <ChallengeSimulator firms={firms} />
       )}
 
-      {/* ── Tab Simulatore Conto Reale ───────────────────────── */}
+      {/* ── Tab Simulazione Conti Reali ──────────────────────── */}
       {activeTab === "real" && (
         <RealAccountSimulator />
       )}

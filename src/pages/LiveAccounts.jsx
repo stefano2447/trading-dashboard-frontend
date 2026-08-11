@@ -670,6 +670,12 @@ export function LiveAccounts() {
   const totalOpenPnL   = activeAccounts.reduce((s, a) =>
     s + (a.open_positions?.reduce((ss, p) => ss + (p.profit || 0), 0) || 0), 0);
 
+  // PnL aggregato dei soli conti Live (esclusi Prop/Demo/Altro e nascosti)
+  const liveOnlyAccounts   = activeAccounts.filter(a => a.account_type === "Live");
+  const liveDailyPnL       = liveOnlyAccounts.reduce((s, a) => s + (a.daily_pnl   || 0), 0);
+  const liveWeeklyPnL      = liveOnlyAccounts.reduce((s, a) => s + (a.weekly_pnl  || 0), 0);
+  const liveMonthlyPnL     = liveOnlyAccounts.reduce((s, a) => s + (a.monthly_pnl || 0), 0);
+
   return (
     <div>
       {/* Header */}
@@ -777,6 +783,29 @@ export function LiveAccounts() {
                 <div style={{ width: 3, height: 14, background: "var(--accent)", borderRadius: 2 }} />
                 LIVE
               </div>
+
+              {/* Riepilogo PnL solo conti Live */}
+              {!showHidden && liveOnlyAccounts.length > 0 && (
+                <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
+                  {[
+                    { label: "PNL LIVE OGGI",      value: liveDailyPnL   },
+                    { label: "PNL LIVE 7 GIORNI",  value: liveWeeklyPnL  },
+                    { label: "PNL LIVE 30 GIORNI", value: liveMonthlyPnL },
+                  ].map(({ label, value }) => (
+                    <div key={label} style={{
+                      background: "var(--bg-surface)", border: "1px solid var(--border)",
+                      borderRadius: "var(--radius-md)", padding: "0.75rem 1rem",
+                      flex: 1, minWidth: 150,
+                    }}>
+                      <div style={{ fontSize: 10, color: "var(--text-muted)", letterSpacing: "0.06em", marginBottom: 5 }}>{label}</div>
+                      <div style={{ fontSize: 18, fontWeight: 600, fontFamily: "var(--font-data)", color: pnlColor(value) }}>
+                        {fmtProfit(value)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "1rem" }}>
                 {visibleAccounts.filter(a => a.account_type === "Live").map(account => (
                   <AccountCard key={account.id} account={account} serverNow={serverNow}
