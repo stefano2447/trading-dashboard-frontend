@@ -1,5 +1,9 @@
-import { useState, useEffect } from "react";
-import { RefreshCw, Settings, X, Activity, ChevronDown, ChevronUp, Trash2, EyeOff, Eye } from "lucide-react";
+import { useState, useEffect, useMemo } from "react";
+import { RefreshCw, Settings, X, Activity, ChevronDown, ChevronUp, Trash2, EyeOff, Eye, TrendingUp } from "lucide-react";
+import {
+  AreaChart, Area, XAxis, YAxis,
+  Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid,
+} from "recharts";
 import { api } from "../api/client";
 import { Spinner } from "../components/ui/Spinner";
 
@@ -81,6 +85,218 @@ function ProgressBar({ pct, color, label, sublabel }) {
       </div>
       <div style={{ height: 5, background: "var(--bg-elevated)", borderRadius: 3, overflow: "hidden" }}>
         <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 3, transition: "width 0.4s ease" }} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Tooltip grafico ──────────────────────────────────────────────────────────
+function CustomTooltip({ active, payload, label }) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)", borderRadius: 6, padding: "0.5rem 0.75rem", fontSize: 12 }}>
+      <div style={{ color: "var(--text-muted)", marginBottom: 4 }}>{label}</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ color: p.value >= 0 ? "var(--accent)" : "var(--danger)", fontFamily: "var(--font-data)" }}>
+          {p.name}: {typeof p.value === "number" ? fmtCurrency(p.value) : p.value}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Modale dettaglio conto (equity curve + dati aggregati) ───────────────────
+function AccountDetailModal({ account, serverNow, onClose }) {
+  const [snapshots, setSnapshots]         = useState([]);
+  const [latestSnapshot, setLatestSnapshot] = useState(null);
+  const [loading, setLoading]             = useState(true);
+  const [error, setError]                 = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api.getAccountSnapshots(account.id)
+      .then((data) => {
+        if (cancelled) return;
+        // L'API può restituire { snapshots, latest_snapshot } o direttamente l'array
+        if (Array.isArray(data)) {
+          setSnapshots(data);
+          setLatestSnapshot(null);
+        } else {
+          setSnapshots(data?.snapshots || []);
+          setLatestSnapshot(data?.latest_snapshot || null);
+        }
+      })
+      .catch((e) => { if (!cancelled) setError(e.message || "Errore caricamento storico"); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [account.id]);
+
+  const curve = useMemo(() => {
+    if (!snapshots.length) return [];
+    const sorted = [...snapshots].sort((a, b) =>
+      new Date(a.snapshot_date || a.snapshot_time) - new Date(b.snapshot_date || b.snapshot_time)
+    );
+    let peak = -Infinity;
+    return sorted.map(s => {
+      const equity = Number(s.equity ?? s.balance ?? 0);
+      peak = Math.max(peak, equity);
+      return {
+        date: s.snapshot_date
+          ? new Date(s.snapshot_date).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" })
+          : new Date(s.snapshot_time).toLocaleDateString("it-IT", { day: "2-digit", month: "2-digit" }),
+        equity,
+        balance: Number(s.balance ?? 0),
+        drawdown: peak > 0 ? -(peak - equity) : 0,
+        daily_pnl: Number(s.daily_pnl ?? 0),
+      };
+    });
+  }, [snapshots]);
+
+  const stats = useMemo(() => {
+    if (!curve.length) return null;
+    const first     = curve[0];
+    const last      = curve[curve.length - 1];
+    const peakEquity = Math.max(...curve.map(c => c.equity));
+    const minDD      = Math.min(...curve.map(c => c.drawdown));
+    const netChange  = last.equity - first.equity;
+    const winDays    = curve.filter(c => c.daily_pnl > 0).length;
+    const lossDays   = curve.filter(c => c.daily_pnl < 0).length;
+    const totalDays  = winDays + lossDays;
+    const winRate    = totalDays > 0 ? (winDays / totalDays) * 100 : null;
+    const bestDay    = Math.max(...curve.map(c => c.daily_pnl));
+    const worstDay   = Math.min(...curve.map(c => c.daily_pnl));
+    return { peakEquity, minDD, netChange, winDays, lossDays, winRate, bestDay, worstDay, days: curve.length };
+  }, [curve]);
+
+  const offline     = isOffline(account, serverNow);
+  const lastSeenStr = fmtLastSeen(account, serverNow);
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        zIndex: 200, padding: "1rem",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: "var(--bg-surface)", border: "1px solid var(--border)",
+          borderRadius: "var(--radius-lg)", padding: "1.5rem",
+          width: "100%", maxWidth: 720, maxHeight: "90vh", overflowY: "auto",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.25rem" }}>
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <TrendingUp size={16} style={{ color: "var(--accent)" }} />
+              <h2 style={{ fontSize: 17, fontWeight: 600 }}>{account.name || account.id}</h2>
+            </div>
+            <div style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-data)", marginTop: 4 }}>
+              {account.id} · {account.platform} · {account.broker || "—"}
+              {offline && <span style={{ marginLeft: 8, color: "var(--danger)" }}>· offline{lastSeenStr ? ` (${lastSeenStr})` : ""}</span>}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}>
+            <X size={18} />
+          </button>
+        </div>
+
+        {/* Dati correnti */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.6rem", marginBottom: "1.25rem" }}>
+          {[
+            { label: "BALANCE",   value: fmtCurrency(account.balance) },
+            { label: "EQUITY",    value: fmtCurrency(account.equity) },
+            { label: "PNL OGGI",  value: fmtProfit(account.daily_pnl),   color: pnlColor(account.daily_pnl) },
+            { label: "PNL 30GG",  value: fmtProfit(account.monthly_pnl), color: pnlColor(account.monthly_pnl) },
+          ].map(({ label, value, color }) => (
+            <div key={label} style={{ background: "var(--bg-elevated)", borderRadius: "var(--radius-sm)", padding: "0.65rem 0.75rem" }}>
+              <div style={{ fontSize: 9, color: "var(--text-muted)", marginBottom: 3 }}>{label}</div>
+              <div style={{ fontSize: 15, fontWeight: 600, fontFamily: "var(--font-data)", color: color || "var(--text-primary)" }}>{value}</div>
+            </div>
+          ))}
+        </div>
+
+        {loading ? (
+          <Spinner />
+        ) : error ? (
+          <div style={{ textAlign: "center", padding: "2rem", color: "var(--text-muted)", fontSize: 13 }}>
+            Impossibile caricare lo storico ({error})
+          </div>
+        ) : curve.length === 0 ? (
+          <div style={{
+            textAlign: "center", padding: "2.5rem",
+            color: "var(--text-muted)", fontSize: 13,
+            border: "1px dashed var(--border)", borderRadius: "var(--radius-lg)",
+          }}>
+            Nessuno storico ancora disponibile per questo conto
+          </div>
+        ) : (
+          <>
+            {/* Statistiche aggregate */}
+            {stats && (
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "0.6rem", marginBottom: "1.25rem" }}>
+                {[
+                  { label: "VARIAZIONE PERIODO", value: fmtProfit(stats.netChange),                     color: pnlColor(stats.netChange) },
+                  { label: "MAX DRAWDOWN",        value: fmtCurrency(stats.minDD),                       color: "var(--danger)" },
+                  { label: "PICCO EQUITY",        value: fmtCurrency(stats.peakEquity) },
+                  { label: "WIN RATE GIORNI",     value: stats.winRate !== null ? `${stats.winRate.toFixed(0)}%` : "—", color: stats.winRate >= 50 ? "var(--accent)" : "var(--warning)" },
+                  { label: "MIGLIOR GIORNO",      value: fmtProfit(stats.bestDay),  color: pnlColor(stats.bestDay) },
+                  { label: "PEGGIOR GIORNO",      value: fmtProfit(stats.worstDay), color: pnlColor(stats.worstDay) },
+                ].map(({ label, value, color }) => (
+                  <div key={label} style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-sm)", padding: "0.6rem 0.75rem" }}>
+                    <div style={{ fontSize: 9, color: "var(--text-muted)", marginBottom: 3, letterSpacing: "0.04em" }}>{label}</div>
+                    <div style={{ fontSize: 14, fontWeight: 600, fontFamily: "var(--font-data)", color: color || "var(--text-primary)" }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Equity curve */}
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+              EQUITY CURVE ({stats?.days || 0} giorni)
+            </div>
+            <ResponsiveContainer width="100%" height={240}>
+              <AreaChart data={curve} margin={{ top: 5, right: 5, bottom: 0, left: 0 }}>
+                <defs>
+                  <linearGradient id="liveEqGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%"  stopColor="#3dd68c" stopOpacity={0.3} />
+                    <stop offset="95%" stopColor="#3dd68c" stopOpacity={0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                <XAxis dataKey="date" tick={{ fontSize: 10, fill: "var(--text-muted)" }} tickLine={false} axisLine={false} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 10, fill: "var(--text-muted)" }} tickLine={false} axisLine={false} width={60} domain={["auto", "auto"]} />
+                <Tooltip content={<CustomTooltip />} />
+                <Area type="monotone" dataKey="equity" name="Equity" stroke="#3dd68c" strokeWidth={2} fill="url(#liveEqGrad)" dot={false} />
+              </AreaChart>
+            </ResponsiveContainer>
+
+            <div style={{ marginTop: "1rem" }}>
+              <div style={{ fontSize: 10, color: "var(--text-muted)", marginBottom: 4, letterSpacing: "0.05em" }}>DRAWDOWN ($)</div>
+              <ResponsiveContainer width="100%" height={90}>
+                <AreaChart data={curve} margin={{ top: 0, right: 5, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="liveDdGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor="#e05252" stopOpacity={0.4} />
+                      <stop offset="95%" stopColor="#e05252" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" vertical={false} />
+                  <XAxis hide />
+                  <YAxis tick={{ fontSize: 9, fill: "var(--text-muted)" }} tickLine={false} axisLine={false} width={60} />
+                  <Tooltip content={<CustomTooltip />} />
+                  <ReferenceLine y={0} stroke="var(--border)" strokeDasharray="3 3" />
+                  <Area type="monotone" dataKey="drawdown" name="DD $" stroke="#e05252" strokeWidth={1.5} fill="url(#liveDdGrad)" dot={false} />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -233,7 +449,7 @@ function ConfigModal({ account, onClose, onSave }) {
 }
 
 // ─── Card singolo conto ───────────────────────────────────────────────────────
-function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePause, onDelete, onToggleHide }) {
+function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePause, onDelete, onToggleHide, onOpenDetail }) {
   const [paused, setPaused] = useState(account.pause_trading ?? false);
   const [confirming, setConfirming]       = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -267,12 +483,17 @@ function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePaus
                    : "var(--border)";
 
   return (
-    <div style={{
-      background: cardBg, border: `1px solid ${cardBorder}`,
-      borderRadius: "var(--radius-lg)", padding: "1.25rem",
-      display: "flex", flexDirection: "column", gap: "1rem",
-      boxShadow: isProp ? "0 0 20px rgba(224,169,82,0.05)" : "none",
-    }}>
+    <div
+      onClick={() => onOpenDetail?.(account)}
+      title="Clicca per vedere equity curve e dati aggregati"
+      style={{
+        background: cardBg, border: `1px solid ${cardBorder}`,
+        borderRadius: "var(--radius-lg)", padding: "1.25rem",
+        display: "flex", flexDirection: "column", gap: "1rem",
+        boxShadow: isProp ? "0 0 20px rgba(224,169,82,0.05)" : "none",
+        cursor: "pointer",
+      }}
+    >
 
       {/* Banner offline */}
       {offline && (
@@ -337,7 +558,7 @@ function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePaus
               {offline ? "Offline" : paused ? "In pausa" : "Live"}
             </span>
           </div>
-          <button onClick={() => onConfigure(account)} style={{
+          <button onClick={(e) => { e.stopPropagation(); onConfigure(account); }} style={{
             display: "flex", alignItems: "center", gap: 4,
             background: "var(--bg-elevated)", border: "1px solid var(--border)",
             borderRadius: "var(--radius-sm)", padding: "0.3rem 0.6rem",
@@ -453,7 +674,7 @@ function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePaus
           overflow: "hidden",
         }}>
           <div
-            onClick={() => setShowPositions(s => !s)}
+            onClick={(e) => { e.stopPropagation(); setShowPositions(s => !s); }}
             style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "0.65rem 0.75rem", cursor: "pointer" }}
           >
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -522,7 +743,7 @@ function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePaus
       <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
 
       {/* Pulsanti azione */}
-      <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
         <button
           onClick={() => {
   const newPaused = !paused;
@@ -601,6 +822,7 @@ export function LiveAccounts() {
   const [accounts, setAccounts]                     = useState([]);
   const [loading, setLoading]                       = useState(true);
   const [configuringAccount, setConfiguringAccount] = useState(null);
+  const [detailAccount, setDetailAccount]           = useState(null);
   const [lastUpdate, setLastUpdate]                 = useState(new Date());
   const [showHidden, setShowHidden]                 = useState(false);
   const [serverNow, setServerNow]                   = useState(null);
@@ -769,6 +991,7 @@ export function LiveAccounts() {
                     onCloseAll={id => api.closeAll(id)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
+                    onOpenDetail={setDetailAccount}
                     onDelete={async (id) => { await api.deleteAccount(id); setAccounts(prev => prev.filter(a => a.id !== id)); }}
                   />
                 ))}
@@ -813,6 +1036,7 @@ export function LiveAccounts() {
                     onCloseAll={id => api.closeAll(id)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
+                    onOpenDetail={setDetailAccount}
                     onDelete={async (id) => { await api.deleteAccount(id); setAccounts(prev => prev.filter(a => a.id !== id)); }}
                   />
                 ))}
@@ -834,6 +1058,7 @@ export function LiveAccounts() {
                     onCloseAll={id => api.closeAll(id)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
+                    onOpenDetail={setDetailAccount}
                     onDelete={async (id) => { await api.deleteAccount(id); setAccounts(prev => prev.filter(a => a.id !== id)); }}
                   />
                 ))}
@@ -849,6 +1074,15 @@ export function LiveAccounts() {
           account={configuringAccount}
           onClose={() => setConfiguringAccount(null)}
           onSave={handleSaveConfig}
+        />
+      )}
+
+      {/* Modale dettaglio conto (equity curve + dati aggregati) */}
+      {detailAccount && (
+        <AccountDetailModal
+          account={detailAccount}
+          serverNow={serverNow}
+          onClose={() => setDetailAccount(null)}
         />
       )}
     </div>
