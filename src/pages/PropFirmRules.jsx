@@ -2987,7 +2987,19 @@ function RealAccountSimulator() {
                               <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",color:"var(--text-muted)",fontSize:11 }}>{rec.param_name}</td>
                               <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
                                            fontWeight:700,color: rec.warning ? "var(--warning)" : "var(--accent)" }}>
-                                {rec.sizing_type==="sqx_fixed_money" ? `$${Number(rec.param_value).toFixed(0)}` : Number(rec.param_value).toFixed(4)}
+                                {rec.sizing_type==="sqx_fixed_money"
+                                  ? `$${Number(rec.param_value).toFixed(0)}`
+                                  : (
+                                    <>
+                                      {Number(rec.param_value).toFixed(4)}
+                                      {Number(rec.param_value) > 0 && (
+                                        <span style={{ marginLeft: 4, fontSize: 10, fontWeight: 400, color: "var(--text-muted)" }}
+                                              title="10 / lotti">
+                                          (10/lot: {(10 / Number(rec.param_value)).toFixed(2)})
+                                        </span>
+                                      )}
+                                    </>
+                                  )}
                                 {rec.warning && (
                                   <span style={{ marginLeft: 4, fontSize: 10, color: "var(--warning)" }}>⚠</span>
                                 )}
