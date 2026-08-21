@@ -188,4 +188,55 @@ setPause: async (accountId, paused) => {
     if (USE_MOCK) return { names: [] };
     return request(`/api/backtest/list-names`);
   },
+
+  // ─── PNL mensile / prelievi / guadagni extra ───────────────────────────────
+  getLiveMonthlySummary: async () => {
+    if (USE_MOCK) return { months: [] };
+    const data = await request("/api/accounts/live/monthly-summary");
+    return data.months || [];
+  },
+
+  getAccountMonthlyPnl: async (accountId) => {
+    if (USE_MOCK) return [];
+    const data = await request(`/api/accounts/${accountId}/monthly-pnl`);
+    return data.monthly || [];
+  },
+
+  createTransaction: async (accountId, { type, amount, transaction_date, note }) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request(`/api/accounts/${accountId}/transactions`, {
+      method: "POST",
+      body: JSON.stringify({ type, amount, transaction_date, note }),
+    });
+  },
+
+  listTransactions: async (accountId) => {
+    if (USE_MOCK) return [];
+    const data = await request(`/api/accounts/${accountId}/transactions`);
+    return data.transactions || [];
+  },
+
+  deleteTransaction: async (transactionId) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request(`/api/accounts/transactions/${transactionId}`, { method: "DELETE" });
+  },
+
+  createExtraEarning: async ({ year, month, amount, source, note }) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request(`/api/extra-earnings`, {
+      method: "POST",
+      body: JSON.stringify({ year, month, amount, source, note }),
+    });
+  },
+
+  listExtraEarnings: async () => {
+    if (USE_MOCK) return [];
+    const data = await request(`/api/extra-earnings`);
+    return data.extra_earnings || [];
+  },
+
+  deleteExtraEarning: async (earningId) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request(`/api/extra-earnings/${earningId}`, { method: "DELETE" });
+  },
 };

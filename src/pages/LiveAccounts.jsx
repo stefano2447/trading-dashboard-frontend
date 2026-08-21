@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { RefreshCw, Settings, X, Activity, ChevronDown, ChevronUp, Trash2, EyeOff, Eye, TrendingUp } from "lucide-react";
+import { RefreshCw, Settings, X, Activity, ChevronDown, ChevronUp, Trash2, EyeOff, Eye, TrendingUp, Plus, Wallet, DollarSign } from "lucide-react";
 import {
   AreaChart, Area, XAxis, YAxis,
   Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid,
@@ -44,6 +44,12 @@ function targetPercent(account) {
   const target = account.initial_balance * (account.profit_target_pct / 100);
   const profit = (account.balance || 0) - account.initial_balance;
   return Math.min(Math.max((profit / target) * 100, 0), 100);
+}
+
+const MONTH_NAMES = ["Gennaio", "Febbraio", "Marzo", "Aprile", "Maggio", "Giugno", "Luglio", "Agosto", "Settembre", "Ottobre", "Novembre", "Dicembre"];
+
+function fmtMonth(year, month) {
+  return `${MONTH_NAMES[month - 1]} ${year}`;
 }
 
 function sortAccounts(accounts) {
@@ -105,12 +111,238 @@ function CustomTooltip({ active, payload, label }) {
   );
 }
 
+// ─── Modale: registra prelievo ─────────────────────────────────────────────────
+function WithdrawalModal({ accounts, onClose, onSaved }) {
+  const [accountId, setAccountId] = useState(accounts[0]?.id || "");
+  const [amount, setAmount]       = useState("");
+  const [date, setDate]           = useState(new Date().toISOString().slice(0, 10));
+  const [note, setNote]           = useState("");
+  const [saving, setSaving]       = useState(false);
+
+  const inputStyle = {
+    width: "100%", background: "var(--bg-elevated)",
+    border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+    color: "var(--text-primary)", padding: "0.5rem 0.75rem",
+    fontSize: 13, outline: "none",
+  };
+  const labelStyle = { fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 4, letterSpacing: "0.04em" };
+
+  async function handleSave() {
+    if (!accountId || !amount || Number(amount) <= 0) return;
+    setSaving(true);
+    try {
+      await api.createTransaction(accountId, { type: "withdrawal", amount: Number(amount), transaction_date: date, note: note || null });
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      console.error("Errore salvataggio prelievo:", e);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "1.5rem", width: "100%", maxWidth: 420 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.1rem" }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600 }}>Registra prelievo</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}><X size={18} /></button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem" }}>
+          <div>
+            <label style={labelStyle}>CONTO</label>
+            <select value={accountId} onChange={e => setAccountId(e.target.value)} style={inputStyle}>
+              {accounts.map(a => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>IMPORTO ($)</label>
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="es. 500" style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>DATA</label>
+            <input type="date" value={date} onChange={e => setDate(e.target.value)} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>NOTA (opzionale)</label>
+            <input value={note} onChange={e => setNote(e.target.value)} placeholder="es. Bonifico verso conto banca" style={inputStyle} />
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.25rem" }}>
+            <button onClick={onClose} style={{ flex: 1, padding: "0.6rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", background: "var(--bg-elevated)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 13 }}>Annulla</button>
+            <button onClick={handleSave} disabled={saving} style={{ flex: 1, padding: "0.6rem", borderRadius: "var(--radius-sm)", border: "none", background: "var(--accent)", color: "#000", cursor: "pointer", fontSize: 13, fontWeight: 600, opacity: saving ? 0.6 : 1 }}>
+              {saving ? "Salvataggio..." : "Salva prelievo"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Modale: aggiungi guadagno extra (prop/altro) ──────────────────────────────
+function ExtraEarningModal({ onClose, onSaved }) {
+  const now = new Date();
+  const [year, setYear]   = useState(now.getFullYear());
+  const [month, setMonth] = useState(now.getMonth() + 1);
+  const [amount, setAmount] = useState("");
+  const [source, setSource] = useState("");
+  const [note, setNote]     = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const inputStyle = {
+    width: "100%", background: "var(--bg-elevated)",
+    border: "1px solid var(--border)", borderRadius: "var(--radius-sm)",
+    color: "var(--text-primary)", padding: "0.5rem 0.75rem",
+    fontSize: 13, outline: "none",
+  };
+  const labelStyle = { fontSize: 11, color: "var(--text-muted)", display: "block", marginBottom: 4, letterSpacing: "0.04em" };
+
+  async function handleSave() {
+    if (!amount || Number(amount) === 0) return;
+    setSaving(true);
+    try {
+      await api.createExtraEarning({ year: Number(year), month: Number(month), amount: Number(amount), source: source || null, note: note || null });
+      onSaved?.();
+      onClose();
+    } catch (e) {
+      console.error("Errore salvataggio guadagno extra:", e);
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: "1rem" }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "1.5rem", width: "100%", maxWidth: 420 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1.1rem" }}>
+          <h2 style={{ fontSize: 16, fontWeight: 600 }}>Aggiungi guadagno extra</h2>
+          <button onClick={onClose} style={{ background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer" }}><X size={18} /></button>
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: "0.9rem" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: "0.75rem" }}>
+            <div>
+              <label style={labelStyle}>MESE</label>
+              <select value={month} onChange={e => setMonth(e.target.value)} style={inputStyle}>
+                {MONTH_NAMES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>ANNO</label>
+              <input type="number" value={year} onChange={e => setYear(e.target.value)} style={inputStyle} />
+            </div>
+          </div>
+          <div>
+            <label style={labelStyle}>IMPORTO ($)</label>
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="es. 1200" style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>FONTE (opzionale)</label>
+            <input value={source} onChange={e => setSource(e.target.value)} placeholder="es. Payout prop firm, affiliazione..." style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>NOTA (opzionale)</label>
+            <input value={note} onChange={e => setNote(e.target.value)} style={inputStyle} />
+          </div>
+          <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.25rem" }}>
+            <button onClick={onClose} style={{ flex: 1, padding: "0.6rem", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)", background: "var(--bg-elevated)", color: "var(--text-secondary)", cursor: "pointer", fontSize: 13 }}>Annulla</button>
+            <button onClick={handleSave} disabled={saving} style={{ flex: 1, padding: "0.6rem", borderRadius: "var(--radius-sm)", border: "none", background: "var(--accent)", color: "#000", cursor: "pointer", fontSize: 13, fontWeight: 600, opacity: saving ? 0.6 : 1 }}>
+              {saving ? "Salvataggio..." : "Salva"}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Pannello PNL mensile conti Live ───────────────────────────────────────────
+function MonthlyPnlPanel({ months, loading, onAddWithdrawal, onAddExtraEarning }) {
+  const [expanded, setExpanded] = useState(false);
+  const visible = expanded ? months : months.slice(0, 6);
+
+  return (
+    <div style={{ background: "var(--bg-surface)", border: "1px solid var(--border)", borderRadius: "var(--radius-lg)", padding: "1.1rem 1.25rem", marginBottom: "1rem" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.9rem", flexWrap: "wrap", gap: "0.6rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <DollarSign size={15} style={{ color: "var(--accent)" }} />
+          <h3 style={{ fontSize: 14, fontWeight: 600 }}>PNL mensile — conti Live</h3>
+        </div>
+        <div style={{ display: "flex", gap: "0.5rem" }}>
+          <button onClick={onAddWithdrawal} style={{
+            display: "flex", alignItems: "center", gap: 5,
+            background: "var(--bg-elevated)", border: "1px solid var(--border)",
+            borderRadius: "var(--radius-sm)", padding: "0.35rem 0.7rem",
+            color: "var(--text-secondary)", cursor: "pointer", fontSize: 12,
+          }}>
+            <Wallet size={12} /> Registra prelievo
+          </button>
+          <button onClick={onAddExtraEarning} style={{
+            display: "flex", alignItems: "center", gap: 5,
+            background: "var(--accent-dim)", border: "1px solid var(--accent)",
+            borderRadius: "var(--radius-sm)", padding: "0.35rem 0.7rem",
+            color: "var(--accent)", cursor: "pointer", fontSize: 12,
+          }}>
+            <Plus size={12} /> Guadagno extra
+          </button>
+        </div>
+      </div>
+
+      {loading ? (
+        <Spinner />
+      ) : months.length === 0 ? (
+        <div style={{ textAlign: "center", padding: "1.5rem", color: "var(--text-muted)", fontSize: 12 }}>
+          Nessuno storico mensile ancora disponibile per i conti Live
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ textAlign: "left", color: "var(--text-muted)", fontSize: 10, letterSpacing: "0.05em" }}>
+                <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500 }}>MESE</th>
+                <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500, textAlign: "right" }}>PNL TRADING</th>
+                <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500, textAlign: "right" }}>EXTRA (PROP/ALTRO)</th>
+                <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500, textAlign: "right" }}>TOTALE</th>
+                <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500, textAlign: "right" }}>PRELIEVI</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.map(m => (
+                <tr key={`${m.year}-${m.month}`} style={{ borderTop: "1px solid var(--border)" }}>
+                  <td style={{ padding: "0.5rem", color: "var(--text-primary)", fontWeight: 500 }}>{fmtMonth(m.year, m.month)}</td>
+                  <td style={{ padding: "0.5rem", textAlign: "right", fontFamily: "var(--font-data)", color: pnlColor(m.trading_pnl) }}>{fmtProfit(m.trading_pnl)}</td>
+                  <td style={{ padding: "0.5rem", textAlign: "right", fontFamily: "var(--font-data)", color: m.extra_earnings ? pnlColor(m.extra_earnings) : "var(--text-muted)" }}>
+                    {m.extra_earnings ? fmtProfit(m.extra_earnings) : "—"}
+                  </td>
+                  <td style={{ padding: "0.5rem", textAlign: "right", fontFamily: "var(--font-data)", fontWeight: 700, color: pnlColor(m.total_pnl) }}>{fmtProfit(m.total_pnl)}</td>
+                  <td style={{ padding: "0.5rem", textAlign: "right", fontFamily: "var(--font-data)", color: m.withdrawals ? "var(--warning)" : "var(--text-muted)" }}>
+                    {m.withdrawals ? `-${fmtCurrency(m.withdrawals)}` : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {months.length > 6 && (
+            <button onClick={() => setExpanded(e => !e)} style={{
+              marginTop: "0.6rem", background: "none", border: "none",
+              color: "var(--text-muted)", cursor: "pointer", fontSize: 11,
+              display: "flex", alignItems: "center", gap: 4,
+            }}>
+              {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              {expanded ? "Mostra meno" : `Mostra tutti (${months.length} mesi)`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Modale dettaglio conto (equity curve + dati aggregati) ───────────────────
 function AccountDetailModal({ account, serverNow, onClose }) {
   const [snapshots, setSnapshots]         = useState([]);
   const [latestSnapshot, setLatestSnapshot] = useState(null);
   const [loading, setLoading]             = useState(true);
   const [error, setError]                 = useState(null);
+  const [monthlyPnl, setMonthlyPnl]       = useState([]);
+  const [monthlyLoading, setMonthlyLoading] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
@@ -130,6 +362,16 @@ function AccountDetailModal({ account, serverNow, onClose }) {
       })
       .catch((e) => { if (!cancelled) setError(e.message || "Errore caricamento storico"); })
       .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [account.id]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setMonthlyLoading(true);
+    api.getAccountMonthlyPnl(account.id)
+      .then((data) => { if (!cancelled) setMonthlyPnl(data || []); })
+      .catch(() => { if (!cancelled) setMonthlyPnl([]); })
+      .finally(() => { if (!cancelled) setMonthlyLoading(false); });
     return () => { cancelled = true; };
   }, [account.id]);
 
@@ -297,6 +539,47 @@ function AccountDetailModal({ account, serverNow, onClose }) {
             </div>
           </>
         )}
+
+        {/* Profitti mensili $ e % */}
+        <div style={{ marginTop: "1.5rem" }}>
+          <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.07em", color: "var(--text-muted)", marginBottom: "0.5rem" }}>
+            PROFITTI MENSILI
+          </div>
+          {monthlyLoading ? (
+            <Spinner />
+          ) : monthlyPnl.length === 0 ? (
+            <div style={{ textAlign: "center", padding: "1.25rem", color: "var(--text-muted)", fontSize: 12, border: "1px dashed var(--border)", borderRadius: "var(--radius-sm)" }}>
+              Nessuno storico mensile ancora disponibile
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ textAlign: "left", color: "var(--text-muted)", fontSize: 10, letterSpacing: "0.05em" }}>
+                    <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500 }}>MESE</th>
+                    <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500, textAlign: "right" }}>PNL ($)</th>
+                    <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500, textAlign: "right" }}>PNL (%)</th>
+                    <th style={{ padding: "0.4rem 0.5rem", fontWeight: 500, textAlign: "right" }}>PRELIEVI</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {monthlyPnl.map(m => (
+                    <tr key={`${m.year}-${m.month}`} style={{ borderTop: "1px solid var(--border)" }}>
+                      <td style={{ padding: "0.5rem", color: "var(--text-primary)", fontWeight: 500 }}>{fmtMonth(m.year, m.month)}</td>
+                      <td style={{ padding: "0.5rem", textAlign: "right", fontFamily: "var(--font-data)", color: pnlColor(m.pnl) }}>{fmtProfit(m.pnl)}</td>
+                      <td style={{ padding: "0.5rem", textAlign: "right", fontFamily: "var(--font-data)", color: pnlColor(m.pnl_pct) }}>
+                        {m.pnl_pct !== null && m.pnl_pct !== undefined ? `${m.pnl_pct >= 0 ? "+" : ""}${m.pnl_pct.toFixed(2)}%` : "—"}
+                      </td>
+                      <td style={{ padding: "0.5rem", textAlign: "right", fontFamily: "var(--font-data)", color: m.withdrawals ? "var(--warning)" : "var(--text-muted)" }}>
+                        {m.withdrawals ? `-${fmtCurrency(m.withdrawals)}` : "—"}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -826,6 +1109,10 @@ export function LiveAccounts() {
   const [lastUpdate, setLastUpdate]                 = useState(new Date());
   const [showHidden, setShowHidden]                 = useState(false);
   const [serverNow, setServerNow]                   = useState(null);
+  const [monthlySummary, setMonthlySummary]         = useState([]);
+  const [monthlySummaryLoading, setMonthlySummaryLoading] = useState(true);
+  const [showWithdrawalModal, setShowWithdrawalModal]     = useState(false);
+  const [showExtraEarningModal, setShowExtraEarningModal] = useState(false);
 
   const [hiddenIds, setHiddenIds] = useState(() => {
     try { return JSON.parse(localStorage.getItem("hidden_accounts") || "[]"); }
@@ -853,8 +1140,17 @@ export function LiveAccounts() {
     });
   }
 
+  function loadMonthlySummary() {
+    setMonthlySummaryLoading(true);
+    api.getLiveMonthlySummary()
+      .then(setMonthlySummary)
+      .catch(() => setMonthlySummary([]))
+      .finally(() => setMonthlySummaryLoading(false));
+  }
+
   useEffect(() => {
     loadAccounts();
+    loadMonthlySummary();
     const interval = setInterval(loadAccounts, 5 * 60 * 1000);
     return () => clearInterval(interval);
   }, []);
@@ -1007,6 +1303,16 @@ export function LiveAccounts() {
                 LIVE
               </div>
 
+              {/* PNL mensile conti Live (include prelievi e guadagni extra) */}
+              {!showHidden && liveOnlyAccounts.length > 0 && (
+                <MonthlyPnlPanel
+                  months={monthlySummary}
+                  loading={monthlySummaryLoading}
+                  onAddWithdrawal={() => setShowWithdrawalModal(true)}
+                  onAddExtraEarning={() => setShowExtraEarningModal(true)}
+                />
+              )}
+
               {/* Riepilogo PnL solo conti Live */}
               {!showHidden && liveOnlyAccounts.length > 0 && (
                 <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
@@ -1083,6 +1389,23 @@ export function LiveAccounts() {
           account={detailAccount}
           serverNow={serverNow}
           onClose={() => setDetailAccount(null)}
+        />
+      )}
+
+      {/* Modale registra prelievo */}
+      {showWithdrawalModal && (
+        <WithdrawalModal
+          accounts={accounts.filter(a => a.account_type === "Live")}
+          onClose={() => setShowWithdrawalModal(false)}
+          onSaved={loadMonthlySummary}
+        />
+      )}
+
+      {/* Modale aggiungi guadagno extra */}
+      {showExtraEarningModal && (
+        <ExtraEarningModal
+          onClose={() => setShowExtraEarningModal(false)}
+          onSaved={loadMonthlySummary}
         />
       )}
     </div>
