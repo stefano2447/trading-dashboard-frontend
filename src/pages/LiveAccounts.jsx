@@ -732,11 +732,12 @@ function ConfigModal({ account, onClose, onSave }) {
 }
 
 // ─── Card singolo conto ───────────────────────────────────────────────────────
-function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePause, onDelete, onToggleHide, onOpenDetail }) {
+function AccountCard({ account, serverNow, onConfigure, onCloseAll, onClosePosition, onTogglePause, onDelete, onToggleHide, onOpenDetail }) {
   const [paused, setPaused] = useState(account.pause_trading ?? false);
   const [confirming, setConfirming]       = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [showPositions, setShowPositions] = useState(true);
+  const [confirmingTicket, setConfirmingTicket] = useState(null);
 
   const isProp       = account.account_type === "Prop";
   const offline      = isOffline(account, serverNow);
@@ -1004,9 +1005,33 @@ function AccountCard({ account, serverNow, onConfigure, onCloseAll, onTogglePaus
                     <span style={{ fontSize: 13, color: "var(--text-primary)", fontWeight: 500 }}>{pos.symbol}</span>
                     <span style={{ fontSize: 11, color: "var(--text-muted)" }}>{pos.lots} lot</span>
                   </div>
-                  <span style={{ fontFamily: "var(--font-data)", fontSize: 13, fontWeight: 600, color: pnlColor(pos.profit) }}>
-                    {fmtProfit(pos.profit)}
-                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                    <span style={{ fontFamily: "var(--font-data)", fontSize: 13, fontWeight: 600, color: pnlColor(pos.profit) }}>
+                      {fmtProfit(pos.profit)}
+                    </span>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (confirmingTicket !== pos.ticket) {
+                          setConfirmingTicket(pos.ticket);
+                          return;
+                        }
+                        setConfirmingTicket(null);
+                        onClosePosition?.(account.id, pos.ticket);
+                      }}
+                      onMouseLeave={() => setConfirmingTicket(prev => (prev === pos.ticket ? null : prev))}
+                      title={confirmingTicket === pos.ticket ? "Conferma chiusura" : "Chiudi questa posizione"}
+                      style={{
+                        padding: "3px 6px", fontSize: 10, fontWeight: 600,
+                        borderRadius: 3, cursor: "pointer", display: "flex", alignItems: "center",
+                        border: `1px solid ${confirmingTicket === pos.ticket ? "var(--danger)" : "var(--border)"}`,
+                        background: confirmingTicket === pos.ticket ? "var(--danger-dim)" : "transparent",
+                        color: confirmingTicket === pos.ticket ? "var(--danger)" : "var(--text-muted)",
+                      }}
+                    >
+                      <X size={11} />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -1285,6 +1310,7 @@ export function LiveAccounts() {
                   <AccountCard key={account.id} account={account} serverNow={serverNow}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
+                    onClosePosition={(id, ticket) => api.closeTicket(id, ticket)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
                     onOpenDetail={setDetailAccount}
@@ -1340,6 +1366,7 @@ export function LiveAccounts() {
                   <AccountCard key={account.id} account={account} serverNow={serverNow}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
+                    onClosePosition={(id, ticket) => api.closeTicket(id, ticket)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
                     onOpenDetail={setDetailAccount}
@@ -1362,6 +1389,7 @@ export function LiveAccounts() {
                   <AccountCard key={account.id} account={account} serverNow={serverNow}
                     onConfigure={setConfiguringAccount}
                     onCloseAll={id => api.closeAll(id)}
+                    onClosePosition={(id, ticket) => api.closeTicket(id, ticket)}
                     onTogglePause={(id, newPaused) => api.setPause(id, newPaused)}
                     onToggleHide={toggleHide}
                     onOpenDetail={setDetailAccount}

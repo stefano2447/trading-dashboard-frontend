@@ -76,6 +76,14 @@ setPause: async (accountId, paused) => {
     return request(`/api/accounts/${accountId}/close_all`, { method: "POST" });
   },
 
+  closeTicket: async (accountId, ticket) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request(`/api/accounts/${accountId}/close_ticket`, {
+      method: "POST",
+      body: JSON.stringify({ ticket }),
+    });
+  },
+
   updateAccount: async (accountId, data) => {
     if (USE_MOCK) return { status: "ok" };
     return request(`/api/accounts/${accountId}`, {
