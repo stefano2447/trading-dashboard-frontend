@@ -111,37 +111,9 @@ function weightedIndex(n, cumWeights, rand) {
   return lo;
 }
 
-// ─── Campionatore a blocchi (block bootstrap) ─────────────────────────────────
-// Pesca BLOCCHI di giorni consecutivi reali invece di giorni singoli: così i
-// periodi morti, le serie di perdite e i regimi restano attaccati come nella
-// storia. Con blockSize=1 torna al bootstrap classico giorno per giorno (che
-// sparpaglia i giorni fermi e sottostima i giorni necessari per passare).
-function makeSampler(arr, cumWeights, blockSize, rand) {
-  const n = arr.length;
-  const bs = Math.max(1, Math.floor(blockSize || 1));
-  let pos = 0, left = 0;
-  return function next() {
-    if (left <= 0 || pos >= n - 1) {
-      const nStarts = Math.max(1, n - bs + 1);
-      pos = cumWeights ? Math.min(weightedIndex(n, cumWeights, rand), nStarts - 1)
-                       : Math.floor(rand() * nStarts);
-      left = bs;
-    } else {
-      pos++;
-    }
-    left--;
-    return arr[pos];
-  };
-}
-
 // ─── Simulazione singola fase ─────────────────────────────────────────────────
-// ddType: "static"  = max loss misurato dal capitale iniziale (FTMO, The5ers
-//                     High Stakes, FundingPips 2-step)
-//         "trailing" = max loss misurato dal picco di balance
-// I giorni restituiti sono giorni di CALENDARIO (weekend inclusi), come i
-// limiti di tempo delle prop firm.
-function simulatePhase(nextDay, capital, dailyDDLimit, totalDDLimit,
-                       profitTarget, timeLimit, minTradingDays, maxDDList, ddRatio, ddType) {
+function simulatePhase(scaledArr, rand, capital, dailyDDLimit, totalDDLimit,
+                       profitTarget, timeLimit, minTradingDays, maxDDList, cumWeights, ddRatio) {
   ddRatio = ddRatio || 1.0;
   let balance      = capital;
   let peakBalance  = capital;
@@ -150,14 +122,16 @@ function simulatePhase(nextDay, capital, dailyDDLimit, totalDDLimit,
 
   while (true) {
     day++;
-    if (day > timeLimit) return { outcome: "timeout", days: day - 1 };
+    if (day > timeLimit) return { outcome: "timeout", days: day };
 
-    const dayPnl = nextDay();
+    const dayPnl = cumWeights ? weightedChoice(scaledArr, cumWeights, rand) : randomChoice(scaledArr, rand);
 
     if (dayPnl !== 0.0) {
       tradingDays++;
 
-      // Daily DD: perdita del giorno corretta verso l'equivalente equity
+      // Daily DD breach — la perdita realizzata a fine giornata viene corretta
+      // col rapporto equity/balance, perché il vero minimo intraday (equity)
+      // è tipicamente più profondo di quanto il balance di chiusura suggerisca.
       if (dayPnl < 0 && Math.abs(dayPnl) * ddRatio > dailyDDLimit) {
         return { outcome: "daily_breach", days: day };
       }
@@ -165,71 +139,22 @@ function simulatePhase(nextDay, capital, dailyDDLimit, totalDDLimit,
       balance += dayPnl;
       if (balance > peakBalance) peakBalance = balance;
 
-      const peakDD = (peakBalance - balance) * ddRatio;
-      maxDDList.push(peakDD / capital * 100.0);
+      // Il balance resta quello reale (per i target di profitto), ma il DD
+      // usato per il breach/report viene corretto verso l'equivalente equity.
+      const currentDD = (peakBalance - balance) * ddRatio;
+      maxDDList.push(currentDD / capital * 100.0);
 
-      const limitDD = ddType === "trailing" ? peakDD : Math.max(0, (capital - balance) * ddRatio);
-      if (limitDD > totalDDLimit) {
+      if (currentDD > totalDDLimit) {
         return { outcome: "total_breach", days: day };
       }
     }
 
-    if (tradingDays >= minTradingDays && balance - capital >= profitTarget) {
-      return { outcome: "success", days: day };
-    }
-  }
-}
-
-// ─── Backtest storico della challenge (partenza mobile) ──────────────────────
-// Fa partire la challenge in OGNI giorno della storia e la fa girare sulla
-// sequenza reale dei giorni successivi (periodi morti inclusi). Nessun
-// ricampionamento: è quello che sarebbe successo davvero iniziando quel giorno.
-// Le partenze che arrivano a fine dati senza esito sono escluse (censurate).
-function historicalChallenge(arr, params, target1, target2, dailyDDLimit, totalDDLimit, timeLimit, minDays, ddRatio, ddType) {
-  const n = arr.length;
-  const capital = params.capital;
-  function run(start, target) {
-    let bal = capital, peak = capital, td = 0;
-    for (let i = start, d = 1; i < n; i++, d++) {
-      if (d > timeLimit) return { o: 0, days: d - 1, end: i - 1 };
-      const v = arr[i];
-      if (v !== 0) {
-        td++;
-        if (v < 0 && -v * ddRatio > dailyDDLimit) return { o: 0, days: d, end: i };
-        bal += v; if (bal > peak) peak = bal;
-        const dd = ddType === "trailing" ? (peak - bal) * ddRatio : Math.max(0, (capital - bal) * ddRatio);
-        if (dd > totalDDLimit) return { o: 0, days: d, end: i };
+    if (tradingDays >= minTradingDays) {
+      if (balance - capital >= profitTarget) {
+        return { outcome: "success", days: day };
       }
-      if (td >= minDays && bal - capital >= target) return { o: 1, days: d, end: i };
     }
-    return { o: -1 };   // dati finiti prima dell'esito
   }
-  const succDays = [], allDays = [];
-  for (let s = 0; s < n; s++) {
-    const r1 = run(s, target1);
-    if (r1.o < 0) continue;
-    let o = r1.o, days = r1.days;
-    if (o === 1 && target2 !== null) {
-      const r2 = run(r1.end + 1, target2);
-      if (r2.o < 0) continue;
-      o = r2.o; days += r2.days;
-    }
-    allDays.push(days);
-    if (o === 1) succDays.push(days);
-  }
-  if (allDays.length < 30) return null;
-  succDays.sort((a, b) => a - b);
-  const p = succDays.length / allDays.length;
-  const q = f => succDays.length ? succDays[Math.min(succDays.length - 1, Math.floor(succDays.length * f))] : 0;
-  const meanAll = allDays.reduce((a, b) => a + b, 0) / allDays.length;
-  return {
-    hist_n_starts:          allDays.length,
-    hist_p_success:         Math.round(p * 10000) / 10000,
-    hist_median_days:       q(0.5),
-    hist_p75_days:          q(0.75),
-    hist_p90_days:          q(0.9),
-    hist_expected_days_to_funded: p > 0 ? Math.round(meanAll / p) : null,
-  };
 }
 
 // ─── Costruzione serie combinata con UN SOLO scale_factor di portafoglio ──────
@@ -326,15 +251,8 @@ function runForRiskLevel(eaComponents, params, riskPct) {
   const built = buildCappedScaledSeries(
     eaComponents, params.capital, riskPct, params.max_risk_per_trade_pct, params.asset_price_overrides
   );
-  // Degrado live: riduce i giorni in profitto del X% (il backtest è ottimizzato
-  // in-sample, dal vivo il rendimento è quasi sempre più basso). 0 = nessuno.
-  const haircut = Math.max(0, Math.min(90, params.perf_haircut_pct || 0)) / 100;
-  const scaledArr = haircut > 0
-    ? built.scaledArr.map(v => v > 0 ? v * (1 - haircut) : v)
-    : built.scaledArr;
+  const scaledArr = built.scaledArr;
   if (!scaledArr.length) return null;
-  const ddType    = params.dd_type === "trailing" ? "trailing" : "static";
-  const blockSize = params.block_size || 1;
 
   const tradeCapped      = built.anyCapped;
   const effectiveRiskPct = riskPct;
@@ -358,30 +276,25 @@ function runForRiskLevel(eaComponents, params, riskPct) {
   const n = params.n_simulations;
   const outcomes = { success: 0, daily_breach: 0, total_breach: 0, timeout: 0 };
   const daysToSuccess = [];
-  const attemptDays   = [];   // durata di OGNI tentativo, riuscito o fallito
   const maxDDReached  = [];
 
   for (let i = 0; i < n; i++) {
-    // Un campionatore per simulazione: la fase 2 continua la stessa sequenza
-    // di blocchi della fase 1, come nella realtà.
-    const nextDay = makeSampler(scaledArr, cumWeights, blockSize, rand);
-    const r1 = simulatePhase(nextDay, params.capital, dailyDDLimit, totalDDLimit,
-                             target1, timeLimit, minDays, maxDDReached, ddRatio, ddType);
+    const r1 = simulatePhase(scaledArr, rand, params.capital,
+                              dailyDDLimit, totalDDLimit,
+                              target1, timeLimit, minDays, maxDDReached, cumWeights, ddRatio);
 
     if (r1.outcome !== "success") {
       outcomes[r1.outcome]++;
-      attemptDays.push(r1.days);
       continue;
     }
 
     if (target2 === null) {
       outcomes.success++;
       daysToSuccess.push(r1.days);
-      attemptDays.push(r1.days);
     } else {
-      const r2 = simulatePhase(nextDay, params.capital, dailyDDLimit, totalDDLimit,
-                               target2, timeLimit, minDays, maxDDReached, ddRatio, ddType);
-      attemptDays.push(r1.days + r2.days);
+      const r2 = simulatePhase(scaledArr, rand, params.capital,
+                                dailyDDLimit, totalDDLimit,
+                                target2, timeLimit, minDays, maxDDReached, cumWeights, ddRatio);
       if (r2.outcome === "success") {
         outcomes.success++;
         daysToSuccess.push(r1.days + r2.days);
@@ -399,15 +312,7 @@ function runForRiskLevel(eaComponents, params, riskPct) {
   const sorted = daysToSuccess.sort((a,b) => a-b);
   const avgDays    = sorted.length ? sorted.reduce((a,b)=>a+b,0)/sorted.length : 0;
   const medianDays = sorted.length ? sorted[Math.floor(sorted.length/2)] : 0;
-  const p75Days    = sorted.length ? sorted[Math.floor(sorted.length*0.75)] : 0;
   const p95Days    = sorted.length ? sorted[Math.floor(sorted.length*0.95)] : 0;
-  // Tempo atteso fino al funded ripartendo subito dopo ogni bocciatura:
-  // durata media di un tentativo (riusciti + falliti) / P(successo).
-  const meanAttempt = attemptDays.length ? attemptDays.reduce((a,b)=>a+b,0)/attemptDays.length : 0;
-  const expectedToFunded = pSuccess > 0 ? meanAttempt / pSuccess : null;
-
-  const hist = historicalChallenge(scaledArr, params, target1, target2, dailyDDLimit,
-                                   totalDDLimit, timeLimit, minDays, ddRatio, ddType);
 
   const sortedDD = maxDDReached.sort((a,b)=>a-b);
   const avgMDD = sortedDD.length ? sortedDD.reduce((a,b)=>a+b,0)/sortedDD.length : 0;
@@ -424,11 +329,7 @@ function runForRiskLevel(eaComponents, params, riskPct) {
     p_timeout:           Math.round(pTimeout * 10000) / 10000,
     avg_days_success:    Math.round(avgDays    * 10) / 10,
     median_days_success: Math.round(medianDays * 10) / 10,
-    p75_days_success:    Math.round(p75Days    * 10) / 10,
     p95_days_success:    Math.round(p95Days    * 10) / 10,
-    mean_attempt_days:   Math.round(meanAttempt * 10) / 10,
-    expected_days_to_funded: expectedToFunded != null ? Math.round(expectedToFunded) : null,
-    ...(hist || {}),
     avg_max_dd_pct:      Math.round(avgMDD * 1000) / 1000,
     p95_max_dd_pct:      Math.round(p95MDD * 1000) / 1000,
   };
@@ -694,18 +595,18 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
   const maxDays = 504;  // ~2 anni di trading
 
   let totalProfit = 0;
-  const ddTypeF = params.dd_type === "trailing" ? "trailing" : "static";
 
   for (let s = 0; s < nSims; s++) {
     let balance     = params.capital;
     let peakBalance = params.capital;
     let day         = 0;
     let violated    = false;
-    const nextDay   = makeSampler(scaledArr, cumWeights, params.block_size || 1, rand);
 
     while (!violated && day < maxDays) {
       day++;
-      const dayPnl = nextDay();
+      const dayPnl = cumWeights
+        ? weightedChoice(scaledArr, cumWeights, rand)
+        : scaledArr[Math.floor(rand() * scaledArr.length)];
 
       if (dayPnl !== 0) {
         // Daily DD
@@ -715,8 +616,7 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
         }
         balance += dayPnl;
         if (balance > peakBalance) peakBalance = balance;
-        const ddF = ddTypeF === "trailing" ? (peakBalance - balance) : Math.max(0, params.capital - balance);
-        if (ddF * ddRatio > totalDDLimit) {
+        if ((peakBalance - balance) * ddRatio > totalDDLimit) {
           violated = true;
           break;
         }
@@ -1343,10 +1243,7 @@ self.onmessage = function(e) {
     const pSucc        = r.p_success > 0 ? r.p_success : 0.0001;
     const attempts     = 1 / pSucc;
     const totalCost    = costChallenge * attempts;
-    // Tempo reale fino al funded, bocciature e ripartenze incluse
-    // (prima: giorni medi dei soli successi × tentativi, che contava i
-    // tentativi falliti come se durassero quanto quelli riusciti).
-    const challengeDays = r.expected_days_to_funded ?? (r.avg_days_success * attempts);
+    const challengeDays = r.avg_days_success * attempts;
     // Giorni funded: stima dal payout (assumiamo ~252 gg/anno di vita media
     // del conto, ma usiamo una proxy: i giorni challenge come riferimento minimo)
     // Per semplicità il tempo del ciclo = challengeDays + giorni per guadagnare il payout
@@ -1373,7 +1270,7 @@ self.onmessage = function(e) {
     if (criterion === "max_prob") {
       score = r.p_success;
     } else if (criterion === "balanced") {
-      score = r.expected_days_to_funded > 0 ? 1 / r.expected_days_to_funded : -1e9;
+      score = r.avg_days_success > 0 ? r.p_success / Math.sqrt(r.avg_days_success + 1) : -1e9;
     } else {  // ev_day (default)
       score = r.ev_per_day;
     }
@@ -1448,7 +1345,7 @@ const DEFAULT_FIRMS = [
       {
         id: "ftmo_2step", name: "2 Step Challenge", type: "2-fase",
         params: { profit_target_p1: 10, profit_target_p2: 5, daily_dd: 5, max_dd: 10,
-                  min_trading_days: 4, time_limit_days: 0, dd_type: "static", leverage: "1:30 – 1:100",
+                  min_trading_days: 10, time_limit_days: 60, leverage: "1:30 – 1:100",
                   profit_split: "80% → 90%", scaling: "+25% ogni 4 mesi fino $2M",
                   payout_frequency: "Bisettimanale" },
         rules: { ea_allowed: true, weekend_hold: true, news_holding: true, min_sl_required: false,
@@ -1456,7 +1353,7 @@ const DEFAULT_FIRMS = [
                  news_trading_challenge: "Permesso", news_trading_funded: "Permesso",
                  max_risk_per_trade: "Nessun limite", consistency_rule: "Nessuna",
                  min_trade_duration: "Nessun limite", inactivity_rule: "Nessuna",
-                 other_rules: "Minimo 4 giorni di trading per fase. Nessun limite di tempo. Max loss statico dal capitale iniziale." },
+                 other_rules: "Minimo 10 giorni di trading. Massimo 60 giorni per completare." },
       },
     ],
   },
@@ -1743,11 +1640,8 @@ function ChallengeSimulator({ firms }) {
   const [is1phase,  setIs1phase]  = useState(false);
   const [dailyDD,   setDailyDD]   = useState(5);
   const [maxDD,     setMaxDD]     = useState(10);
-  const [timeLimit, setTimeLimit] = useState(0);    // 0 = nessun limite (FTMO attuale)
-  const [minDays,   setMinDays]   = useState(4);
-  const [ddType,    setDdType]    = useState("static");   // "static" | "trailing"
-  const [blockSize, setBlockSize] = useState(20);   // giorni consecutivi per blocco nel Monte Carlo
-  const [haircut,   setHaircut]   = useState(0);    // % di degrado live sui giorni in profitto
+  const [timeLimit, setTimeLimit] = useState(60);
+  const [minDays,   setMinDays]   = useState(10);
 
   const [riskMin,        setRiskMin]        = useState(0.5);
   const [riskMax,        setRiskMax]        = useState(3.0);
@@ -1785,13 +1679,8 @@ function ChallengeSimulator({ firms }) {
     setIs1phase(!challenge.params.profit_target_p2);
     setDailyDD(challenge.params.daily_dd ?? 5);
     setMaxDD(challenge.params.max_dd ?? 10);
-    // 0/null = nessun limite di tempo. Prima qui c'era "|| 90": le challenge
-    // senza limite venivano simulate con un limite di 90 giorni, quindi i
-    // tentativi lenti finivano in "timeout" e i "giorni medi" (calcolati solo
-    // sui successi) risultavano artificialmente bassi.
-    setTimeLimit(challenge.params.time_limit_days ?? 0);
-    setMinDays(challenge.params.min_trading_days ?? 0);
-    setDdType(challenge.params.dd_type || "static");
+    setTimeLimit(challenge.params.time_limit_days || 90);
+    setMinDays(challenge.params.min_trading_days || 0);
   }
 
   function getEquityDdRatio() {
@@ -1988,9 +1877,6 @@ function ChallengeSimulator({ firms }) {
         payout_wait_factor:   0.075,
         optimal_criterion:    optimalCriterion,
         equity_dd_ratio:      getEquityDdRatio(),
-        dd_type:              ddType,
-        block_size:           blockSize,
-        perf_haircut_pct:     haircut,
       },
     });
   }
@@ -2170,10 +2056,8 @@ function ChallengeSimulator({ firms }) {
               {[
                 { label: "Daily DD (%)",    val: dailyDD,   set: setDailyDD },
                 { label: "Max DD (%)",      val: maxDD,     set: setMaxDD },
-                { label: "Limite giorni (0=no)", val: timeLimit, set: setTimeLimit },
+                { label: "Limite giorni",   val: timeLimit, set: setTimeLimit },
                 { label: "Min giorni trad.", val: minDays,  set: setMinDays },
-                { label: "Blocco MC (giorni)", val: blockSize, set: setBlockSize },
-                { label: "Degrado live (%)", val: haircut,  set: setHaircut },
               ].map(({ label, val, set }) => (
                 <div key={label} style={{ display: "flex", justifyContent: "space-between",
                                           alignItems: "center", marginBottom: "0.5rem" }}>
@@ -2184,22 +2068,6 @@ function ChallengeSimulator({ firms }) {
                              borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }} />
                 </div>
               ))}
-              <div style={{ display: "flex", justifyContent: "space-between",
-                            alignItems: "center", marginBottom: "0.5rem" }}>
-                <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Tipo Max DD</span>
-                <select value={ddType} onChange={e => setDdType(e.target.value)}
-                  style={{ width: 90, padding: "0.2rem 0.4rem", fontSize: 12,
-                           background: "var(--bg-elevated)", border: "1px solid var(--border)",
-                           borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }}>
-                  <option value="static">Statico</option>
-                  <option value="trailing">Trailing</option>
-                </select>
-              </div>
-              <div style={{ fontSize: 10, color: "var(--text-muted)", lineHeight: 1.4 }}>
-                Blocco MC: giorni consecutivi reali pescati insieme (1 = vecchio metodo giorno per giorno,
-                che sparpaglia i periodi morti). Degrado live: riduce del X% i giorni in profitto
-                per tener conto che il backtest è ottimizzato (20-30% è prudente).
-              </div>
             </Card>
 
             {/* Range rischio */}
@@ -2239,7 +2107,7 @@ function ChallengeSimulator({ firms }) {
                            borderRadius: "var(--radius-sm)", color: "var(--text-primary)" }}>
                   <option value="ev_day">Valore atteso / giorno (economico)</option>
                   <option value="max_prob">Massima probabilità di successo</option>
-                  <option value="balanced">Minimo tempo atteso al funded</option>
+                  <option value="balanced">Bilanciato P/√giorni</option>
                 </select>
 
                 {optimalCriterion === "ev_day" && (
@@ -2316,21 +2184,15 @@ function ChallengeSimulator({ firms }) {
               <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
 
                 {/* KPI ottimale */}
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: "0.75rem" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "0.75rem" }}>
                   {(() => {
                     const opt = results.results.find(r => r.risk_pct === optimal) || {};
                     return [
                       { label: "Rischio Ottimale", value: `${optimal}%`, type: "positive" },
                       { label: "P(Successo)",       value: `${(opt.p_success * 100).toFixed(1)}%`,
                         type: opt.p_success >= 0.7 ? "positive" : opt.p_success >= 0.5 ? "warning" : "negative" },
-                      { label: "Giorni mediani (P75)", value: opt.median_days_success
-                          ? `${opt.median_days_success.toFixed(0)}gg (${opt.p75_days_success?.toFixed(0)})` : "—",
+                      { label: "Giorni Medi",       value: `${opt.avg_days_success?.toFixed(0) || "—"}gg`,
                         type: "neutral" },
-                      { label: "Tempo atteso al funded", value: opt.expected_days_to_funded
-                          ? `${opt.expected_days_to_funded}gg` : "—", type: "neutral" },
-                      { label: "Storico reale: P / mediana", value: opt.hist_p_success != null
-                          ? `${(opt.hist_p_success * 100).toFixed(0)}% / ${opt.hist_median_days}gg` : "—",
-                        type: opt.hist_p_success >= 0.7 ? "positive" : opt.hist_p_success >= 0.5 ? "warning" : "negative" },
                       { label: "P(Viola Daily DD)", value: `${(opt.p_daily_breach * 100).toFixed(1)}%`,
                         type: opt.p_daily_breach < 0.1 ? "positive" : opt.p_daily_breach < 0.25 ? "warning" : "negative" },
                     ];
@@ -2352,8 +2214,8 @@ function ChallengeSimulator({ firms }) {
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
                       <thead>
                         <tr style={{ borderBottom: "1px solid var(--border)" }}>
-                          {["RISCHIO%", "P(SUCC)", "P(DAILY)", "GG MED (P75)", "→FUNDED",
-                            "STORICO P / GG", "PAYOUT NET", "EV/GG", "MAX DD%", ""].map(h => (
+                          {["RISCHIO%", "P(SUCC)", "P(DAILY)", "GG MEDI",
+                            "PAYOUT NET", "EV/GG", "MAX DD%", ""].map(h => (
                             <th key={h} style={{ padding: "0.4rem 0.5rem", textAlign: "right",
                                                fontSize: 10, fontWeight: 600, color: "var(--text-muted)",
                                                whiteSpace: "nowrap" }}>
@@ -2395,17 +2257,7 @@ function ChallengeSimulator({ firms }) {
                               </td>
                               <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
                                            fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>
-                                {r.median_days_success > 0 ? `${r.median_days_success} (${r.p75_days_success})` : "—"}
-                              </td>
-                              <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
-                                           fontFamily: "var(--font-data)", color: "var(--text-primary)", fontWeight: 600 }}
-                                  title="Giorni di calendario attesi fino al funded, ripartendo subito dopo ogni bocciatura">
-                                {r.expected_days_to_funded ? r.expected_days_to_funded : "—"}
-                              </td>
-                              <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
-                                           fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}
-                                  title={r.hist_n_starts ? `Challenge fatta partire in ${r.hist_n_starts} giorni diversi della storia reale. P75 ${r.hist_p75_days}gg, P90 ${r.hist_p90_days}gg, atteso al funded ${r.hist_expected_days_to_funded ?? "—"}gg` : ""}>
-                                {r.hist_p_success != null ? `${(r.hist_p_success * 100).toFixed(0)}% / ${r.hist_median_days}` : "—"}
+                                {r.avg_days_success > 0 ? r.avg_days_success : "—"}
                               </td>
                               <td style={{ padding: "0.35rem 0.5rem", textAlign: "right",
                                            fontFamily: "var(--font-data)", color: "var(--text-secondary)" }}>
@@ -2581,9 +2433,7 @@ function ChallengeSimulator({ firms }) {
                   {results.n_simulations.toLocaleString()} simulazioni ·
                   {results.n_trading_days} giorni con trade su {results.n_calendar_days} totali
                   ({results.avg_trades_freq}% frequenza) ·
-                  Giorni = giorni di calendario (weekend inclusi). "→Funded" = tempo atteso includendo
-                  le bocciature e le ripartenze. "Storico" = challenge fatta partire in ogni giorno del
-                  backtest sulla sequenza reale, senza rimescolare (i periodi morti restano dove sono).
+                  Rischio ottimale = max P(successo) / √(giorni medi)
                 </div>
               </div>
             )}

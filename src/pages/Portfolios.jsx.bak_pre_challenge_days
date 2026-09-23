@@ -92,26 +92,10 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
   const [filterMinStability, setFilterMinStability] = useState("");
   const [filterSignal,     setFilterSignal]     = useState("");
 
-  // Colonne dove "più basso = meglio": al primo click ordinano crescente
-  const LOWER_IS_BETTER = new Set(["ch_expected_days_to_funded", "ch_median_days", "ch_p75_days",
-                                   "max_dd_pct", "avg_dos", "max_dos", "portfolio_ulcer_index",
-                                   "pct_losing_weeks", "pct_losing_months"]);
   function toggleSort(key) {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
-    else { setSortKey(key); setSortDir(LOWER_IS_BETTER.has(key) ? "asc" : "desc"); }
+    else { setSortKey(key); setSortDir("desc"); }
   }
-
-  // ⚡ = i 10 portafogli della collezione che arrivano prima al funded nella
-  // challenge di riferimento (backtest storico a partenza mobile, vedi
-  // challenge_speed.py), tra quelli con P(passare) sopra la soglia minima.
-  const fastSet = new Set(
-    portfolios
-      .filter(p => p.ch_meets_min_pass && p.ch_expected_days_to_funded != null)
-      .sort((a, b) => a.ch_expected_days_to_funded - b.ch_expected_days_to_funded)
-      .slice(0, 10)
-      .map(p => p.rank)
-  );
-  const hasChallengeData = portfolios.some(p => p.ch_expected_days_to_funded != null);
 
   const filtered = portfolios
     .filter(p => !filterMinCalmar  || p.calmar >= parseFloat(filterMinCalmar))
@@ -131,11 +115,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
     ));
 
   const sorted = [...filtered].sort((a, b) => {
-    const va = a[sortKey], vb = b[sortKey];
-    // valori mancanti sempre in fondo, in entrambe le direzioni
-    if (va == null && vb == null) return 0;
-    if (va == null) return 1;
-    if (vb == null) return -1;
+    const va = a[sortKey] ?? 0, vb = b[sortKey] ?? 0;
     return sortDir === "asc" ? va - vb : vb - va;
   });
 
@@ -197,17 +177,6 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
             <option value="RED">🔴 Rosso</option>
           </select>
         </div>
-        {hasChallengeData && (
-          <button
-            onClick={() => { setSortKey("ch_expected_days_to_funded"); setSortDir("asc"); }}
-            title="Ordina per tempo atteso al funded nella challenge di riferimento (ripartenze incluse)"
-            style={{ padding: "0.25rem 0.6rem", fontSize: 12, cursor: "pointer",
-                     background: sortKey === "ch_expected_days_to_funded" ? "var(--accent-dim)" : "var(--bg-elevated)",
-                     border: "1px solid var(--accent)", borderRadius: "var(--radius-sm)",
-                     color: "var(--accent)", fontWeight: 600 }}>
-            ⚡ Più veloci in challenge
-          </button>
-        )}
         <span style={{ fontSize: 12, color: "var(--text-muted)", alignSelf: "center" }}>
           {sorted.length} / {portfolios.length} portafogli
         </span>
@@ -237,9 +206,6 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
               {th("MESI-",    "pct_losing_months")}
               {th("TRADE/SETT", "avg_trades_per_week")}
               {th("SCORE",    "composite_score")}
-              {th("CH PASS%", "ch_pass_rate")}
-              {th("CH GG MED", "ch_median_days")}
-              {th("→FUNDED",  "ch_expected_days_to_funded")}
               {th("DR",       "_hrp_dr")}
               {th("ENB%",     "_hrp_enb")}
               <th style={{ padding: "0.5rem 0.75rem", fontSize: 11,
@@ -275,10 +241,6 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                       <span style={{ fontSize: 12, color: isSelected ? "var(--accent)" : "var(--text-primary)" }}>
                         {p.name.replace("Portfolio ", "P")}
                       </span>
-                      {fastSet.has(p.rank) && (
-                        <span title={`Tra i 10 più veloci della collezione per arrivare al funded: ~${p.ch_expected_days_to_funded} giorni attesi (ripartenze incluse)`}
-                              style={{ fontSize: 11, color: "var(--accent)", cursor: "help" }}>⚡</span>
-                      )}
                       {hasWarning && (
                         <span title="⚠ Contiene EA con R:R medio < 1: un singolo stop loss può essere una perdita giornaliera significativa. Verifica compatibilità con il daily DD limit della prop firm.">
                           <AlertTriangle size={12} color="var(--warning)" style={{ cursor: "help" }} />
@@ -417,32 +379,6 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                     {fmt(p.composite_score, 3)}
                   </td>
 
-                  {/* Challenge di riferimento: backtest storico a partenza mobile */}
-                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)",
-                               color: p.ch_pass_rate == null ? "var(--text-muted)"
-                                    : p.ch_pass_rate >= 80 ? "var(--accent)"
-                                    : p.ch_pass_rate >= 60 ? "var(--warning)" : "var(--danger)" }}>
-                    {p.ch_pass_rate != null ? `${fmt(p.ch_pass_rate, 0)}%` : "—"}
-                  </td>
-                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)",
-                               color: "var(--text-secondary)" }}>
-                    <span title={p.ch_median_days != null ? `Mediana ${p.ch_median_days}gg · P75 ${p.ch_p75_days}gg · P90 ${p.ch_p90_days}gg (giorni di calendario, solo tentativi riusciti)` : ""}
-                          style={{ cursor: "help" }}>
-                      {p.ch_median_days != null ? p.ch_median_days : "—"}
-                    </span>
-                  </td>
-                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)",
-                               fontWeight: fastSet.has(p.rank) ? 700 : 400,
-                               color: fastSet.has(p.rank) ? "var(--accent)" : "var(--text-primary)" }}>
-                    <span title={p.ch_expected_days_to_funded != null
-                                  ? `Giorni attesi fino al funded ripartendo dopo ogni bocciatura (≈${p.ch_expected_attempts} tentativi). Rischio: DD storico = ${Math.round((p.ch_opt_dd_frac || 0) * 100)}% del limite DD${p.ch_meets_min_pass ? "" : " — P(passare) sotto la soglia minima"}`
-                                  : ""}
-                          style={{ cursor: "help" }}>
-                      {p.ch_expected_days_to_funded != null ? p.ch_expected_days_to_funded : "—"}
-                      {p.ch_expected_days_to_funded != null && !p.ch_meets_min_pass && " ⚠"}
-                    </span>
-                  </td>
-
                   {/* DR — Diversification Ratio */}
                   <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)" }}>
                     {p._hrp?.diversification_ratio != null
@@ -539,16 +475,6 @@ function PortfolioDetail({ portfolio, eaPool, overlapMatrix }) {
           <Badge value={`Calmar ${fmt(portfolio.calmar)}`}  type={calmarType(portfolio.calmar)} />
           <Badge value={"DOS " + fmt(portfolio.avg_dos, 3)} type={portfolio.avg_dos < 0.2 ? "positive" : portfolio.avg_dos < 0.4 ? "warning" : "negative"} />
           <Badge value={"MaxDD " + fmt(portfolio.max_dd_pct) + "%"} type={portfolio.max_dd_pct > 15 ? "negative" : "warning"} />
-          {portfolio.ch_expected_days_to_funded != null && (
-            <span title={`Challenge di riferimento simulata facendola partire in ${portfolio.ch_n_starts} giorni diversi del backtest, sulla sequenza reale dei giorni (periodi morti inclusi).\n` +
-                         `P(passare) ${fmt(portfolio.ch_pass_rate, 0)}% · mediana ${portfolio.ch_median_days}gg · P75 ${portfolio.ch_p75_days}gg · P90 ${portfolio.ch_p90_days}gg\n` +
-                         `Tempo atteso al funded (ripartenze incluse): ${portfolio.ch_expected_days_to_funded}gg\n` +
-                         `Rischio ottimale: DD storico del portafoglio = ${Math.round((portfolio.ch_opt_dd_frac || 0) * 100)}% del limite su conto 100k.\nMoltiplicatore da applicare al parametro di rischio di OGNI EA rispetto al backtest (es. InpRiskMoney testato a 20k DD): ×${fmt(portfolio.ch_scale_vs_backtest, 4)}`}
-                  style={{ cursor: "help" }}>
-              <Badge value={`⚡ Challenge: ${fmt(portfolio.ch_pass_rate, 0)}% · ${portfolio.ch_median_days}gg med · ${portfolio.ch_expected_days_to_funded}gg al funded`}
-                     type={portfolio.ch_meets_min_pass ? "positive" : "warning"} />
-            </span>
-          )}
           {portfolio.portfolio_recency != null && (
             <span title={"Calmar recente / storico = " + fmt(portfolio.portfolio_recency, 2) + "x (ultimi 90gg)"}
                   style={{ cursor: "help" }}>
