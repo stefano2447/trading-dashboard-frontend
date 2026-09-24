@@ -94,7 +94,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
 
   // Colonne dove "più basso = meglio": al primo click ordinano crescente
   const LOWER_IS_BETTER = new Set(["ch_expected_days_to_funded", "ch_median_days", "ch_p75_days",
-                                   "max_dd_pct", "avg_dos", "max_dos", "portfolio_ulcer_index",
+                                   "max_dd_pct", "_dd_eq_pct", "avg_dos", "max_dos", "portfolio_ulcer_index",
                                    "pct_losing_weeks", "pct_losing_months"]);
   function toggleSort(key) {
     if (sortKey === key) setSortDir(d => d === "asc" ? "desc" : "asc");
@@ -114,6 +114,10 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
   const hasChallengeData = portfolios.some(p => p.ch_expected_days_to_funded != null);
 
   const filtered = portfolios
+    // DD equity: in $ se l'analyzer lo fornisce (curva combinata × rapporto
+    // equity/balance), altrimenti stima in % dal DD balance di QA
+    .map(p => ({ ...p, _dd_eq_pct: p.dd_eq_usd != null ? p.dd_eq_usd
+                                  : (p.max_dd_pct || 0) * (p.equity_balance_dd_ratio || 1) }))
     .filter(p => !filterMinCalmar  || p.calmar >= parseFloat(filterMinCalmar))
     .filter(p => !filterMaxDos     || p.avg_dos <= parseFloat(filterMaxDos))
     .filter(p => !filterNea        || p.ea_list.length === parseInt(filterNea))
@@ -225,14 +229,15 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
               {th("CALMAR",  "calmar")}
               {th("SHARPE",  "sharpe")}
               {th("MAX DD%", "max_dd_pct")}
+              {th("DD EQ $", "_dd_eq_pct")}
               {th("AVG DOS",  "avg_dos")}
               {th("MAX DOS",  "max_dos")}
               {th("RECENCY",  "portfolio_recency")}
               {th("UPI",      "portfolio_upi")}
               {th("RF",       "portfolio_recovery_factor")}
-              {th("STAB",     "is_oos_stability_score")}
-              {th("UI%",      "portfolio_ulcer_index")}
-              {th("CAGR%",    "portfolio_cagr_pct")}
+              {th("CONS12",   "is_oos_stability_score")}
+              {th("UI%@DD10", "portfolio_ulcer_index")}
+              {th("REND%@DD10", "portfolio_cagr_pct")}
               {th("SETT-",    "pct_losing_weeks")}
               {th("MESI-",    "pct_losing_months")}
               {th("TRADE/SETT", "avg_trades_per_week")}
@@ -296,6 +301,15 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                   <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)",
                                color: p.max_dd_pct > 15 ? "var(--danger)" : "var(--text-primary)" }}>
                     {fmt(p.max_dd_pct)}%
+                  </td>
+                  <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)",
+                               color: p._dd_eq_pct > 15 ? "var(--danger)" : "var(--text-primary)" }}>
+                    <span title={p.dd_eq_usd != null
+                        ? `DD massimo stimato in EQUITY del portafoglio combinato, in $ ai lotti del backtest (ogni EA ≈ 20k DD equity): DD balance $${Math.round(p.dd_bal_usd || 0).toLocaleString()} × rapporto equity/balance ${fmt(p.equity_balance_dd_ratio || 1, 3)}. Più è basso rispetto alla somma dei singoli, più il portafoglio è diversificato.`
+                        : `Stima: DD balance ${fmt(p.max_dd_pct)}% × rapporto equity/balance ${fmt(p.equity_balance_dd_ratio || 1, 3)}`}
+                          style={{ cursor: "help" }}>
+                      {p.dd_eq_usd != null ? `${fmt(p.dd_eq_usd / 1000, 1)}k` : `${fmt(p._dd_eq_pct)}%`}
+                    </span>
                   </td>
                   <td style={{ padding: "0.5rem 0.75rem", textAlign: "right", fontFamily: "var(--font-data)",
                                color: dosColor(p.avg_dos) }}>
