@@ -732,39 +732,6 @@ function simulateFunded(eaComponents, params, riskPctFunded) {
 }
 
 
-// ─── Helper scala rischio / taglio rendimento ─────────────────────────────────
-function seriesMaxDD(arr) {
-  let c = 0, pk = 0, m = 0;
-  for (const x of arr) { c += x; if (c > pk) pk = c; if (pk - c > m) m = pk - c; }
-  return m;
-}
-// Fattore di scala UNICO del portafoglio dato il livello di rischio.
-//   ra_risk_mode "dd"  → riskPct = DD massimo storico (equity) in % del capitale
-//   ra_risk_mode "day" → riskPct = giorno peggiore storico in % del capitale (vecchio metodo)
-function portfolioScaleFactor(rawCombined, riskPct, params) {
-  const riskDollar = params.ra_capital * riskPct / 100.0;
-  if ((params.ra_risk_mode || "day") === "dd") {
-    const dd = seriesMaxDD(rawCombined) * (params.equity_dd_ratio || 1.0);
-    return dd > 0 ? riskDollar / dd : 1.0;
-  }
-  let worst = 0;
-  for (const x of rawCombined) if (x < worst) worst = x;
-  return worst < 0 ? riskDollar / Math.abs(worst) : 1.0;
-}
-// Taglio del rendimento: toglie pct% del guadagno medio giornaliero distribuendolo
-// sui soli giorni con trade. La volatilità e le perdite restano quelle storiche,
-// cala solo la deriva positiva (il backtest ottimizzato è ottimista).
-function applyHaircutInPlace(arr, pct) {
-  if (!pct) return;
-  const n = arr.length;
-  let sum = 0, act = 0;
-  for (const x of arr) { sum += x; if (x !== 0) act++; }
-  const mu = sum / n;
-  if (mu <= 0 || act === 0) return;
-  const d = mu * pct / 100.0 * n / act;
-  for (let i = 0; i < n; i++) if (arr[i] !== 0) arr[i] -= d;
-}
-
 // ─── Simulatore Conto Reale ───────────────────────────────────────────────────
 function runRealAccountSimulation(eaComponents, params, riskPct) {
   // riskPct = rischio target in % del capitale reale, ANCORATO al giorno
@@ -790,7 +757,11 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
     const arr = c.daily_pnl_dollar;
     for (let i = 0; i < minLen; i++) rawCombined[i] += arr[arr.length - minLen + i];
   }
-  const scaleFactor  = portfolioScaleFactor(rawCombined, riskPct, params);
+  const rawLosses = rawCombined.filter(x => x < 0);
+  const maxDailyLoss = rawLosses.length ? Math.abs(Math.min(...rawLosses)) : 1.0;
+
+  const riskDollar   = params.ra_capital * riskPct / 100.0;
+  const scaleFactor  = maxDailyLoss > 0 ? riskDollar / maxDailyLoss : 1.0;
   const ddRatio      = params.equity_dd_ratio || 1.0;
 
   // Per ogni EA: stesso scaleFactor, corretto solo per il prezzo attuale
@@ -830,13 +801,6 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
   for (const s of eaSeries) {
     for (let i = 0; i < minLen; i++) combinedDollar[i] += s[i];
   }
-  // Statistiche STORICHE al livello di rischio (prima del taglio rendimento)
-  let worstDay = 0, sumAll = 0;
-  for (const x of combinedDollar) { if (x < worstDay) worstDay = x; sumAll += x; }
-  const histDDPct     = seriesMaxDD(combinedDollar) * ddRatio / params.ra_capital * 100;
-  const worstDayPct   = -worstDay * ddRatio / params.ra_capital * 100;
-  const histAnnRetPct = sumAll / minLen * 365 / params.ra_capital * 100;
-  applyHaircutInPlace(combinedDollar, params.ra_haircut_pct || 0);
 
   // Orizzonti temporali
   const horizons = [
@@ -1069,9 +1033,6 @@ function runRealAccountSimulation(eaComponents, params, riskPct) {
 
   return {
     risk_pct:            riskPct,
-    hist_dd_pct:         Math.round(histDDPct * 10) / 10,
-    worst_day_pct:       Math.round(worstDayPct * 100) / 100,
-    hist_ann_ret_pct:    Math.round(histAnnRetPct * 10) / 10,
     p_ruin:              Math.round(nRuined / nSims * 10000) / 10000,
     p_dd30:              Math.round(nDD30   / nSims * 10000) / 10000,
     avg_max_dd:          Math.round(sortedDD.reduce((a,b)=>a+b,0)/ndd * 10) / 10,
@@ -1098,7 +1059,9 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
     const arr = c.daily_pnl_dollar;
     for (let i = 0; i < minLen; i++) rawCombined[i] += arr[arr.length - minLen + i];
   }
-  const scaleFactor  = portfolioScaleFactor(rawCombined, riskPct, params);
+  const rawLosses = rawCombined.filter(x => x < 0);
+  const maxDailyLoss = rawLosses.length ? Math.abs(Math.min(...rawLosses)) : 1.0;
+  const scaleFactor  = maxDailyLoss > 0 ? riskDollar / maxDailyLoss : 1.0;
 
   const eaSeries = [];
   for (const comp of eaComponents) {
@@ -1130,7 +1093,6 @@ function runCompoundSimulation(eaComponents, params, riskPct) {
   // Combina le serie in % (somma dei contributi)
   const combinedPct = new Array(minLen).fill(0);
   for (const s of eaSeries) for (let i = 0; i < minLen; i++) combinedPct[i] += s[i];
-  applyHaircutInPlace(combinedPct, params.ra_haircut_pct || 0);
 
   const horizons = [
     { label: "3m",  days: 91  },
@@ -1274,8 +1236,6 @@ self.onmessage = function(e) {
     const ruinLimit  = (params.ra_ruin_max_pct || 5)  / 100.0;
     const dd30Limit  = (params.ra_dd30_max_pct || 50) / 100.0;  // default 50% = quasi disattivato
     const ruinPctNeg = -(params.ra_ruin_pct || 60);
-    // DD massimo accettabile nel 95% dei casi (P95 del DD simulato). 0/assente = nessun limite
-    const ddP95Max   = params.ra_dd_p95_max_pct > 0 ? params.ra_dd_p95_max_pct : Infinity;
 
     let anyValid = false;
     for (let i = 0; i < results.length; i++) {
@@ -1293,9 +1253,8 @@ self.onmessage = function(e) {
       const p5Valid   = p5_12m > ruinPctNeg + 5;
       const ruinValid = p_ruin < ruinLimit;
       const dd30Valid = p_dd30 < dd30Limit;
-      const ddP95Valid = (r.p95_max_dd ?? 0) <= ddP95Max;
 
-      if (p5Valid && ruinValid && dd30Valid && ddP95Valid) {
+      if (p5Valid && ruinValid && dd30Valid) {
         anyValid = true;
         const score = h12.mean_ret;
         if (score > bestScore) { bestScore = score; bestIdx = i; }
@@ -1310,15 +1269,11 @@ self.onmessage = function(e) {
         if (!h12) continue;
         const p5Valid   = h12.p5_ret > ruinPctNeg + 5;
         const ruinValid = (r.p_ruin || 0) < ruinLimit;
-        if (p5Valid && ruinValid && (r.p95_max_dd ?? 0) <= ddP95Max) {
+        if (p5Valid && ruinValid) {
           anyValid = true;
           if (h12.mean_ret > bestScore) { bestScore = h12.mean_ret; bestIdx = i; }
         }
       }
-    }
-    // Se il limite di DD P95 non è rispettato da nessun livello, prende il più basso
-    if (!anyValid && ddP95Max !== Infinity && results.length) {
-      anyValid = true; bestIdx = 0;
     }
     // Fallback finale: prende il P5 migliore
     if (!anyValid) {
@@ -2661,23 +2616,17 @@ function RealAccountSimulator() {
 
   // Parametri simulazione
   const [capital,   setCapital]   = useState(10000);
-  // Modalità rischio: "dd" = DD massimo storico (equity) in % del capitale,
-  //                   "day" = giorno peggiore storico in % del capitale
-  const [riskMode,  setRiskMode]  = useState("dd");
-  const [riskMin,   setRiskMin]   = useState(5);
-  const [riskMax,   setRiskMax]   = useState(40);
-  const [riskStep,  setRiskStep]  = useState(5);
-  const [ddP95Max,  setDdP95Max]  = useState(0);    // 0 = nessun limite
-  const [haircut,   setHaircut]   = useState(0);    // % di rendimento tolto
-  const [regimeW,   setRegimeW]   = useState(true); // pesca più spesso i periodi peggiori
+  const [riskMin,   setRiskMin]   = useState(0.5);
+  const [riskMax,   setRiskMax]   = useState(3.0);
+  const [riskStep,  setRiskStep]  = useState(0.25);
   const [nSim,      setNSim]      = useState(3000);
   const [ruinPct,      setRuinPct]      = useState(60);
   const [maxRiskPerTrade, setMaxRiskPerTrade] = useState(2.0);
   const [assetPrices, setAssetPrices] = useState(loadAssetPrices);
   useEffect(() => { saveAssetPrices(assetPrices); }, [assetPrices]);
   const [pRuinMax,     setPRuinMax]     = useState(5);   // % max P(rovina) per ottimale
-  const [pDD30Max,     setPDD30Max]     = useState(100); // % max P(DD>30%) per ottimale (100 = disattivato)
-  const [blockSize,    setBlockSize]    = useState(10);  // giorni per block bootstrap (1=classico)
+  const [pDD30Max,     setPDD30Max]     = useState(30);  // % max P(DD>30%) per ottimale
+  const [blockSize,    setBlockSize]    = useState(1);   // giorni per block bootstrap (1=classico)
   const [customDays, setCustomDays] = useState(180);
   const [showCustom, setShowCustom] = useState(false);
 
@@ -2783,9 +2732,6 @@ function RealAccountSimulator() {
         ra_ruin_pct:       ruinPct,
         ra_block_size:     blockSize,
         ra_custom_days:    showCustom ? customDays : 0,
-        ra_risk_mode:      riskMode,
-        ra_haircut_pct:    haircut,
-        regime_weighted_bootstrap: regimeW,
         n_simulations:     nSim,
         max_risk_per_trade_pct: maxRiskPerTrade,
         asset_price_overrides:  assetPrices,
@@ -2824,10 +2770,6 @@ function RealAccountSimulator() {
         ra_dd30_max_pct:   pDD30Max,
         ra_block_size:     blockSize,
         ra_custom_days:    showCustom ? customDays : 0,
-        ra_risk_mode:      riskMode,
-        ra_haircut_pct:    haircut,
-        ra_dd_p95_max_pct: ddP95Max,
-        regime_weighted_bootstrap: regimeW,
         risk_min_pct:   riskMin,
         risk_max_pct:   riskMax,
         risk_step_pct:  riskStep,
@@ -2962,24 +2904,9 @@ function RealAccountSimulator() {
                              borderRadius:"var(--radius-sm)", color:"var(--text-primary)" }}/>
                 </div>
               )}
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.5rem" }}>
-                <span style={{ fontSize:12, color:"var(--text-muted)", cursor:"help" }}
-                  title="DD storico = il DD massimo del backtest del portafoglio viene portato a X% del capitale (consigliato: è come calibri gli EA). Giorno peggiore = il peggior giorno storico viene portato a X% del capitale.">
-                  Rischio espresso come ⓘ</span>
-                <select value={riskMode} onChange={e => {
-                    const m = e.target.value; setRiskMode(m);
-                    if (m === "dd") { setRiskMin(5); setRiskMax(40); setRiskStep(5); }
-                    else            { setRiskMin(0.5); setRiskMax(5); setRiskStep(0.5); }
-                  }}
-                  style={{ width:130, padding:"0.2rem", fontSize:12, background:"var(--bg-elevated)",
-                           border:"1px solid var(--border)", borderRadius:"var(--radius-sm)", color:"var(--text-primary)" }}>
-                  <option value="dd">DD max storico</option>
-                  <option value="day">Giorno peggiore</option>
-                </select>
-              </div>
               {[
-                { label: riskMode === "dd" ? "DD storico min (%)" : "Rischio min (%)", val: riskMin,   set: setRiskMin },
-                { label: riskMode === "dd" ? "DD storico max (%)" : "Rischio max (%)", val: riskMax,   set: setRiskMax },
+                { label: "Rischio min (%)",   val: riskMin,   set: setRiskMin },
+                { label: "Rischio max (%)",   val: riskMax,   set: setRiskMax },
                 { label: "Step (%)",          val: riskStep,  set: setRiskStep },
                 { label: "Simulazioni",       val: nSim,      set: setNSim },
               ].map(({label,val,set}) => (
@@ -3001,12 +2928,9 @@ function RealAccountSimulator() {
                   { label: "P(rovina) max (%)",
                     hint:  "ottimale = max rendimento con P(rovina) sotto questa soglia",
                     val: pRuinMax, set: setPRuinMax },
-                  { label: "DD P95 max (%)",
-                    hint:  "Il livello ★ è il più alto il cui DD simulato (95% dei casi) resta sotto questa soglia. 0 = nessun limite (★ = max rendimento con P(rovina) sotto soglia). Es: 15 conservativo, 30 aggressivo",
-                    val: ddP95Max, set: setDdP95Max },
-                  { label: "Taglio rendimento (%)",
-                    hint:  "Riduce il guadagno medio del backtest di questa % (le perdite restano quelle storiche). Il backtest è ottimizzato: 20-40% è un'ipotesi prudente per il reale",
-                    val: haircut, set: setHaircut },
+                  { label: "P(DD>30%) max (%)",
+                    hint:  "ottimale esclude livelli dove il drawdown >30% è troppo probabile. Abbassa a 15-20% per conti che non vuoi vedere in forte perdita",
+                    val: pDD30Max, set: setPDD30Max },
                   { label: "Block bootstrap (giorni)",
                     hint:  "1=indipendente, 10-20=preserva correlazione temporale (più realistico)",
                     val: blockSize, set: setBlockSize },
@@ -3021,12 +2945,6 @@ function RealAccountSimulator() {
                                borderRadius:"var(--radius-sm)", color:"var(--text-primary)" }}/>
                   </div>
                 ))}
-                <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:"0.5rem" }}>
-                  <span style={{ fontSize:12, color:"var(--text-muted)", cursor:"help" }}
-                    title="Pesca più spesso i periodi storici peggiori (circa -20% sul rendimento medio e code di DD più larghe). Disattiva per vedere il Monte Carlo 'neutro'">
-                    Pesa periodi peggiori ⓘ</span>
-                  <input type="checkbox" checked={regimeW} onChange={e=>setRegimeW(e.target.checked)}/>
-                </div>
               </div>
 
               <button onClick={runSimulation} disabled={running||!selId}
@@ -3076,7 +2994,7 @@ function RealAccountSimulator() {
                   return (
                     <div style={{ display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:"0.75rem" }}>
                       {[
-                        { label: riskMode === "dd" ? "Livello ★ (DD storico)" : "Rischio ★", value:`${optimal}%`, type:"positive" },
+                        { label:"Rischio Ottimale", value:`${optimal}%`,             type:"positive" },
                         { label:`Rendimento 6m medio`, value:`${h6.mean_ret ?? "—"}%`, type: h6.mean_ret>0?"positive":"negative" },
                         { label:`Rendimento 6m P95`,  value:`${h6.p95_ret ?? "—"}%`,  type:"positive" },
                         { label:"P(Rovina)",           value:`${((opt.p_ruin||0)*100).toFixed(1)}%`,
@@ -3097,10 +3015,7 @@ function RealAccountSimulator() {
                                 color:"var(--text-muted)",marginBottom:"0.75rem" }}>
                     PROIEZIONE RENDIMENTO — LOTTI FISSI
                     <span style={{ fontWeight:400, marginLeft:8 }}>
-                      ({riskMode === "dd"
-                        ? "livello = DD massimo storico del portafoglio in % del capitale"
-                        : "livello = giorno peggiore storico del portafoglio in % del capitale"}
-                      {haircut ? ` · rendimento tagliato del ${haircut}%` : ""})
+                      (rischio = % del capitale per singola operazione)
                     </span>
                   </div>
                   <div style={{ overflowX:"auto" }}>
@@ -3108,13 +3023,7 @@ function RealAccountSimulator() {
                       <thead>
                         <tr style={{ borderBottom:"2px solid var(--border)" }}>
                           <th rowSpan={2} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
-                                                   fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}>{riskMode === "dd" ? "DD STOR.%" : "RISCHIO%"}</th>
-                          <th rowSpan={2} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
-                                                   fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}
-                              title="Peggior giorno storico del portafoglio a questo livello, in % del capitale">GG PEGG.%</th>
-                          <th rowSpan={2} style={{ padding:"0.4rem 0.5rem",textAlign:"right",fontSize:10,
-                                                   fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}
-                              title="Rendimento annuo medio del backtest a questo livello (lotti fissi, prima del taglio)">REND.ST/A</th>
+                                                   fontWeight:600,color:"var(--text-muted)",verticalAlign:"bottom" }}>RISCHIO%</th>
                           {horizonKeys.map(hk => (
                             <th key={hk} colSpan={3} style={{ padding:"0.3rem 0.5rem",textAlign:"center",fontSize:10,
                                                               fontWeight:700,color:"var(--text-secondary)",
@@ -3159,12 +3068,6 @@ function RealAccountSimulator() {
                               <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",
                                            fontWeight:isOpt?700:400,color:isOpt?"var(--accent)":"var(--text-primary)" }}>
                                 {r.risk_pct}%
-                              </td>
-                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",fontSize:11,color:"var(--text-muted)" }}>
-                                {r.worst_day_pct != null ? r.worst_day_pct.toFixed(2)+"%" : "—"}
-                              </td>
-                              <td style={{ padding:"0.35rem 0.5rem",textAlign:"right",fontFamily:"var(--font-data)",fontSize:11,color:"var(--text-muted)" }}>
-                                {r.hist_ann_ret_pct != null ? r.hist_ann_ret_pct.toFixed(0)+"%" : "—"}
                               </td>
                               {horizonKeys.map(hk => {
                                 const h = r.horizons?.[hk] || {};
