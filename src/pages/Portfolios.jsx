@@ -81,8 +81,8 @@ function recencyLabel(v) {
 // ─── Tabella portafogli ───────────────────────────────────────────────────────
 
 function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
-  const [sortKey, setSortKey]   = useState("composite_score");
-  const [sortDir, setSortDir]   = useState("desc");
+  const [sortKey, setSortKey]   = useState("rank");
+  const [sortDir, setSortDir]   = useState("asc");
   const [filterMinCalmar,  setFilterMinCalmar]  = useState("");
   const [filterMaxDos,     setFilterMaxDos]     = useState("");
   const [filterNea,        setFilterNea]        = useState("");
@@ -93,7 +93,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
   const [filterSignal,     setFilterSignal]     = useState("");
 
   // Colonne dove "più basso = meglio": al primo click ordinano crescente
-  const LOWER_IS_BETTER = new Set(["ch_expected_days_to_funded", "ch_median_days", "ch_p75_days",
+  const LOWER_IS_BETTER = new Set(["rank", "ch_expected_days_to_funded", "ch_median_days", "ch_p75_days",
                                    "max_dd_pct", "_dd_eq_pct", "avg_dos", "max_dos", "portfolio_ulcer_index",
                                    "pct_losing_weeks", "pct_losing_months"]);
   function toggleSort(key) {
@@ -222,9 +222,11 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr style={{ borderBottom: "1px solid var(--border)" }}>
-              <th style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontSize: 11,
-                           fontWeight: 600, color: "var(--text-muted)", letterSpacing: "0.05em" }}>
-                PORTAFOGLIO
+              <th onClick={() => toggleSort("rank")}
+                  style={{ padding: "0.5rem 0.75rem", textAlign: "left", fontSize: 11, cursor: "pointer",
+                           fontWeight: 600, color: "var(--text-muted)", letterSpacing: "0.05em",
+                           background: sortKey === "rank" ? "var(--bg-elevated)" : "transparent" }}>
+                # PORTAFOGLIO <SortIcon col="rank" />
               </th>
               {th("CALMAR",  "calmar")}
               {th("SHARPE",  "sharpe")}
@@ -275,7 +277,7 @@ function PortfolioTable({ portfolios, eaPool, onSelect, selected }) {
                     <div style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
                       <span style={{ fontFamily: "var(--font-data)", fontSize: 11,
                                      color: "var(--text-muted)", minWidth: 24 }}>
-                        #{i + 1}
+                        #{p.rank + 1}
                       </span>
                       <span style={{ fontSize: 12, color: isSelected ? "var(--accent)" : "var(--text-primary)" }}>
                         {p.name.replace("Portfolio ", "P")}
