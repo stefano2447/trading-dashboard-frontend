@@ -6,6 +6,7 @@ import { Portfolios }   from "./pages/Portfolios";
 import { LiveAccounts } from "./pages/LiveAccounts";
 import { News }         from "./pages/News";
 import { PropFirmRules } from "./pages/PropFirmRules";
+import { Capital }   from "./pages/Capital";
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/conti"         element={<LiveAccounts />} />
           <Route path="/news"          element={<News />}         />
           <Route path="/propfirm" element={<PropFirmRules />} />
+          <Route path="/capitale"      element={<Capital />}      />
         </Route>
       </Routes>
     </BrowserRouter>

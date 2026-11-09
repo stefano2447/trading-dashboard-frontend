@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { BarChart2, Search, Briefcase, Radio, Newspaper, Shield } from "lucide-react";
+import { BarChart2, Search, Briefcase, Radio, Newspaper, Shield, Wallet } from "lucide-react";
 
 const navItems = [
   { path: "/",             icon: BarChart2,  label: "EA Overview"        },
@@ -8,6 +8,7 @@ const navItems = [
   { path: "/conti",        icon: Radio,      label: "Conti Live"         },
   { path: "/news",         icon: Newspaper,  label: "News"               },
   { path: "/propfirm",     icon: Shield,     label: "Simulazione Portafogli"},
+  { path: "/capitale",     icon: Wallet,     label: "Capitale"           },
 ];
 
 export function Sidebar() {

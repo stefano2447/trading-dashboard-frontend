@@ -247,4 +247,35 @@ setPause: async (accountId, paused) => {
     if (USE_MOCK) return { status: "ok" };
     return request(`/api/extra-earnings/${earningId}`, { method: "DELETE" });
   },
+
+  // ─── Capitale (challenge acquistate e payout) ──────────────────────────────
+  getCapital: async () => {
+    if (USE_MOCK) return { challenges: [], payouts: [] };
+    return request("/api/capital");
+  },
+
+  createCapitalChallenge: async (body) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request("/api/capital/challenges", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  setCapitalChallengeStatus: async (id, status) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request(`/api/capital/challenges/${id}/status`, { method: "PUT", body: JSON.stringify({ status }) });
+  },
+
+  deleteCapitalChallenge: async (id) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request(`/api/capital/challenges/${id}`, { method: "DELETE" });
+  },
+
+  createCapitalPayout: async (body) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request("/api/capital/payouts", { method: "POST", body: JSON.stringify(body) });
+  },
+
+  deleteCapitalPayout: async (id) => {
+    if (USE_MOCK) return { status: "ok" };
+    return request(`/api/capital/payouts/${id}`, { method: "DELETE" });
+  },
 };
